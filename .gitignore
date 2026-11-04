@@ -1,0 +1,16 @@
+# Unity-generated files
+engine/Library/
+engine/Temp/
+engine/Obj/
+engine/Build/
+engine/Logs/
+engine/UserSettings/
+engine/.vs/
+*.csproj
+*.sln
+
+# Run artifacts and secrets
+runs/
+.env
+*.log
+
