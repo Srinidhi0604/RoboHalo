@@ -11,6 +11,9 @@ engine/.vs/
 
 # Run artifacts and secrets
 runs/
+.docx-review/
 .env
 *.log
 
+__pycache__/
+*.pyc

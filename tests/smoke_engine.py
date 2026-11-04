@@ -16,12 +16,15 @@ def request(path, body=None):
 state, content_type = request("/state")
 assert content_type == "application/json"
 state = json.loads(state)
-assert {"state", "x", "y", "heading", "holding", "retry_count"} <= state.keys()
+assert {"name", "state", "x", "y", "heading", "holding", "retries", "retry_count", "outcome"} <= state.keys()
 assert not ({"objects", "object_ids", "object_positions", "drop_zone"} & state.keys())
 
 image, content_type = request("/look")
 assert content_type == "image/jpeg" and image[:2] == b"\xff\xd8"
 assert image[-2:] == b"\xff\xd9"
+
+started, _ = request("/start", {"command": "Bring the round red thing"})
+assert json.loads(started)["success"] is True
 
 turn, _ = request("/turn", {"degrees": 15})
 assert json.loads(turn)["success"] is True
