@@ -16,6 +16,13 @@ in [PRD.md](PRD.md).
 3. For a lower-memory demo, use **RoboHalo > Build Windows Player** in Unity,
    close the Editor, and launch `engine/Build/RoboHalo.exe`.
 
+The RoboHalo assets and scene are also installed in the existing Unity Hub
+project at `C:\Users\Lenovo\My project`. In that editor, choose **RoboHalo > Open
+Demo Scene**, then press Play. The original `SampleScene` remains available;
+RoboHalo is first in that project's build scene list. The repo's `engine/` project
+is the version-controlled source; edits made in the separate Hub project do not
+automatically sync back here.
+
 The model is sourced from the official ROBOTIS TurtleBot3 repository. See the
 [asset attribution](engine/Assets/Models/TurtleBot/ATTRIBUTION.md). The visual
 mesh is separate from the simple physics collider to keep movement fast.

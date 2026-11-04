@@ -4,9 +4,14 @@ using UnityEngine;
 
 public static class BuildScene
 {
-    [MenuItem("RoboHalo/Create Demo Scene")]
+    [MenuItem("RoboHalo/Open Demo Scene")]
     public static void CreateDemoScene()
     {
+        if (System.IO.File.Exists("Assets/Scenes/RoboHalo.unity"))
+        {
+            EditorSceneManager.OpenScene("Assets/Scenes/RoboHalo.unity");
+            return;
+        }
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         new GameObject("RoboHalo Engine").AddComponent<RobotEngine>();
         System.IO.Directory.CreateDirectory("Assets/Scenes");
