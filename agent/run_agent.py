@@ -140,6 +140,17 @@ How to work, one tool call per step:
 Each step, write one short sentence saying what you see and why you chose your action, then call exactly one tool."""
 
 
+# Only the latest image is ever sent, so the model's own one-line note per view is its whole memory of
+# earlier views. Making it a required tool argument stops it being skipped.
+NOTE = {"type": "string", "description": "One short line recording this view for later steps: each object you can see with its "
+        "side (left/centre/right), rough distance and anything the command cares about (colour, shape, relative height), and the "
+        "drop zone if visible. Write 'nothing new' only if the image is unchanged."}
+for _tool in TOOLS + LIFT_TOOLS:
+    if _tool["name"] != "fail":
+        _tool["input_schema"]["properties"]["note"] = NOTE
+        _tool["input_schema"]["required"] = _tool["input_schema"].get("required", []) + ["note"]
+
+
 def detect_robot(engine):
     """'gripper' for the arena engine, 'lift' for the warehouse engine (it has no display-camera endpoint)."""
     try:
@@ -201,6 +212,9 @@ def status_text(step, depth, state, has_image):
     if state.get("pickup_failed"):
         lines.append("The pickup failed, so the target is not within reach yet. Do not call pickup again from this pose: "
                      "move about 0.1 m closer or re-centre first. The image is the same view as before.")
+    if state.get("pickup_fails", 0) >= 3:
+        lines.append(f"{state['pickup_fails']} pickups in a row have failed. If you were close and centred, this thing cannot be "
+                     "picked up, so it is not what the command means: leave it and look for another candidate.")
     if state.get("dithering"):
         lines.append("Your last two turns were small and cancelled each other out. The target is centred enough: do not turn again, drive toward it now.")
     if not has_image:
@@ -359,6 +373,7 @@ def run(command, client, model, engine=None, runs_dir="runs", max_steps=MAX_STEP
     outcome, step, previous = None, 0, None
     viewed, spots = [], 1  # headings looked at from the current spot, and how many spots were searched
     turns, resend = [], False  # turns in a row (to catch left-right dithering); show the last frame again
+    pickup_fails = 0           # failed pickups since the last one that worked
 
     with log_path.open("w", encoding="utf-8") as log:
         for step in range(1, max_steps + 1):
@@ -376,6 +391,7 @@ def run(command, client, model, engine=None, runs_dir="runs", max_steps=MAX_STEP
                 viewed.append(state["heading"])
             state["viewed"], state["spots"] = viewed, spots
             state["pickup_failed"] = resend and bool(previous) and previous["name"] == "pickup"
+            state["pickup_fails"] = pickup_fails
             state["blocked"] = previous["name"] if previous and previous["result"].get("collided") else None
             state["dithering"] = len(turns) >= 2 and turns[-1] * turns[-2] < 0 and max(abs(turns[-1]), abs(turns[-2])) <= 20
             name, args, reasoning, usage, call_id = None, {}, "", None, None
@@ -386,6 +402,8 @@ def run(command, client, model, engine=None, runs_dir="runs", max_steps=MAX_STEP
             except Exception as error:  # API failure after the SDK's own retries
                 result, outcome = {"ok": False, "error": f"API error: {error}"}, "fail_not_reached"
             else:
+                note = str(args.pop("note", "") or "")  # memory only: never sent to the engine
+                reasoning = " | ".join(part for part in (reasoning, note) if part)
                 if name is None:
                     result = {"ok": False, "error": "no valid tool call; call exactly one tool with all its required arguments"}
                 elif name == "fail":
@@ -413,11 +431,13 @@ def run(command, client, model, engine=None, runs_dir="runs", max_steps=MAX_STEP
                 on_step(record_line)  # live progress for the chat box
             # The model's own one-line observation and where it stood: its only memory of earlier views.
             pose = f" [at x={state['x']:.1f} y={state['y']:.1f} heading={state.get('heading', 0):.0f}]" if "x" in state else ""
-            history.append(history_line(step, name, args, result) + pose + (f" saw: {reasoning[:110]}" if reasoning else ""))
+            history.append(history_line(step, name, args, result) + pose + (f" saw: {reasoning[:220]}" if reasoning else ""))
             previous = {"id": call_id, "name": name, "input": args, "result": result} if call_id else None
             # Look again only after the robot actually moved or turned.
             need_look = name in ("move", "turn", "go_to") and not result.get("error")
             resend = name in ("pickup", "drop") and not result.get("ok")
+            if name == "pickup":
+                pickup_fails = 0 if result.get("ok") else pickup_fails + 1
             turns = turns + [float(args.get("degrees") or 0)] if name == "turn" else []
             if name == "go_to" or (name == "move" and abs(result.get("moved") or 0) >= 0.5):
                 viewed, spots = [], spots + 1  # a new vantage point: earlier views no longer cover it
