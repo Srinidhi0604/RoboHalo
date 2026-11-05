@@ -30,7 +30,7 @@ public sealed class RobotEngine : MonoBehaviour
     [Serializable] private sealed class ObstacleInput { public bool on; }
     [Serializable] private sealed class ObstacleOutput { public bool on; }
     [Serializable] private sealed class ViewOutput { public int index; public string view; }
-    [Serializable] private sealed class CommandOutput { public string command; }
+    [Serializable] private sealed class CommandOutput { public string command; public bool audio; }
     [Serializable] private sealed class StateOutput
     {
         public string name;
@@ -88,63 +88,110 @@ public sealed class RobotEngine : MonoBehaviour
     private float lastMoved;
     private string guiCommand = "Bring the round red thing";
     private string pendingAgentCommand;
-    private bool listening;
-    private string voiceNote = "";
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-    private UnityEngine.Windows.Speech.DictationRecognizer dictation;
-#endif
+    // The Claude agent that serves the AI COMMAND box. Send and Speak start it if nothing is polling.
+    public string agentFolder = @"E:\ansu-hack";
+    public string pythonCommand = "python";
+    private System.Diagnostics.Process agentProcess;
+    private float lastAgentPoll = -10f;
+    private string agentNote = "";
 
-    // Voice command: Windows dictation hears one sentence, puts it in the command box and sends it
-    // to the agent exactly as if it had been typed and Send pressed.
-    private void StartListening()
+    private void EnsureAgent()
     {
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        if (Time.realtimeSinceStartup - lastAgentPoll < 3f) return;      // a listener is already polling
+        if (agentProcess != null && !agentProcess.HasExited) return;     // ours is still starting up
         try
         {
-            dictation = new UnityEngine.Windows.Speech.DictationRecognizer();
-            dictation.InitialSilenceTimeoutSeconds = 8f;
-            dictation.AutoSilenceTimeoutSeconds = 2f;
-            dictation.DictationResult += (text, confidence) =>
+            agentProcess = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
-                if (string.IsNullOrWhiteSpace(text)) return;
-                guiCommand = text.Trim();
-                pendingAgentCommand = guiCommand;
-                StopListening("Heard and sent to the agent: " + guiCommand);
-            };
-            dictation.DictationComplete += cause =>
-            {
-                if (listening) StopListening(cause == UnityEngine.Windows.Speech.DictationCompletionCause.TimeoutExceeded
-                    ? "Heard nothing. Press Speak and try again." : "Voice input ended (" + cause + ").");
-            };
-            dictation.DictationError += (error, code) =>
-                StopListening("Voice input failed: " + error + " Turn on Windows Settings > Privacy & security > Speech > Online speech recognition, and check the microphone.");
-            dictation.Start();
-            listening = true;
-            guiStatus = voiceNote = "Listening... say the command.";
+                FileName = pythonCommand,
+                Arguments = "-m agent.run_agent --listen --port " + listenerPort,
+                WorkingDirectory = agentFolder,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            agentNote = "";
         }
-        catch (Exception error)
+        catch (Exception error) { agentNote = "Could not start the agent: " + error.Message; }
+    }
+
+    private bool listening;
+    private string voiceNote = "";
+    private AudioClip voiceClip;
+    private string voiceDevice;
+    private float voiceStarted, voiceLastSound, voicePeak;
+    private bool voiceHeardSpeech;
+    private byte[] pendingAudio; // finished recording, waiting for the agent process to transcribe it
+    private const int VoiceRate = 16000, VoiceMaxSeconds = 10;
+
+    // Voice command: Unity records the microphone itself; the agent process (python -m agent.run_agent --listen)
+    // fetches the recording, transcribes it with Whisper, and runs it as if it had been typed.
+    // Recording stops on its own after a pause in speech, after 10 s, or when Stop is pressed.
+    private void StartListening()
+    {
+        if (Microphone.devices.Length == 0) { StopListening("No microphone found. Plug one in or enable it in Windows Sound settings."); return; }
+        voiceDevice = Microphone.devices[0];
+        voiceClip = Microphone.Start(voiceDevice, false, VoiceMaxSeconds, VoiceRate);
+        if (voiceClip == null) { StopListening("Could not open the microphone (" + voiceDevice + ")."); return; }
+        listening = true;
+        voiceStarted = voiceLastSound = Time.realtimeSinceStartup;
+        voicePeak = 0f;
+        voiceHeardSpeech = false;
+        guiStatus = voiceNote = "Recording... say the command (" + voiceDevice + ").";
+    }
+
+    // Called every frame while recording: watch the level to stop after the speaker pauses.
+    private void VoiceTick()
+    {
+        if (!listening || voiceClip == null) return;
+        int position = Microphone.GetPosition(voiceDevice);
+        float now = Time.realtimeSinceStartup;
+        if (position > 1600)
         {
-            StopListening("Voice input is not available: " + error.Message);
+            var window = new float[1600]; // last 0.1 s
+            voiceClip.GetData(window, position - window.Length);
+            float level = 0f;
+            foreach (float v in window) level = Mathf.Max(level, Mathf.Abs(v));
+            voicePeak = Mathf.Max(voicePeak, level);
+            if (level > 0.04f) { voiceHeardSpeech = true; voiceLastSound = now; }
         }
-#else
-        guiStatus = "Voice input needs Windows.";
-#endif
+        bool pausedAfterSpeech = voiceHeardSpeech && now - voiceLastSound > 1.3f;
+        bool nothingSaid = !voiceHeardSpeech && now - voiceStarted > 6f;
+        if (pausedAfterSpeech || nothingSaid || !Microphone.IsRecording(voiceDevice) || now - voiceStarted > VoiceMaxSeconds) FinishRecording();
+    }
+
+    private void FinishRecording()
+    {
+        int length = Microphone.GetPosition(voiceDevice);
+        if (!Microphone.IsRecording(voiceDevice)) length = voiceClip.samples; // ran to the 10 s limit
+        Microphone.End(voiceDevice);
+        if (voicePeak < 0.005f) { StopListening("The microphone gave only silence. Check it is unmuted (often F4) and selected in Windows Sound > Input."); return; }
+        if (!voiceHeardSpeech || length < VoiceRate / 2) { StopListening("Heard nothing loud enough. Press Speak and talk a little closer to the microphone."); return; }
+        var samples = new float[length];
+        voiceClip.GetData(samples, 0);
+        pendingAudio = Wav(samples, VoiceRate);
+        StopListening("Recorded " + (length / (float)VoiceRate).ToString("0.0") + " s. Transcribing...");
+    }
+
+    private static byte[] Wav(float[] samples, int rate) // 16-bit mono PCM
+    {
+        using (var stream = new MemoryStream())
+        using (var w = new BinaryWriter(stream))
+        {
+            w.Write(Encoding.ASCII.GetBytes("RIFF")); w.Write(36 + samples.Length * 2); w.Write(Encoding.ASCII.GetBytes("WAVE"));
+            w.Write(Encoding.ASCII.GetBytes("fmt ")); w.Write(16); w.Write((short)1); w.Write((short)1); w.Write(rate); w.Write(rate * 2); w.Write((short)2); w.Write((short)16);
+            w.Write(Encoding.ASCII.GetBytes("data")); w.Write(samples.Length * 2);
+            foreach (float v in samples) w.Write((short)Mathf.Clamp(v * 32767f, -32768f, 32767f));
+            return stream.ToArray();
+        }
     }
 
     private void StopListening(string status)
     {
+        if (listening && voiceDevice != null && Microphone.IsRecording(voiceDevice)) Microphone.End(voiceDevice);
         listening = false;
         guiStatus = status;
         if (voiceNote != status) Debug.Log("Voice command: " + status); // also in the Console, where it cannot be cut off
         voiceNote = status;
-#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-        if (dictation != null)
-        {
-            var old = dictation;
-            dictation = null;
-            try { if (old.Status == UnityEngine.Windows.Speech.SpeechSystemStatus.Running) old.Stop(); old.Dispose(); } catch (Exception) { }
-        }
-#endif
     }
     private string guiStatus = "Idle. Ready for command.";
     private Vector3[] spawnPositions;
@@ -163,6 +210,9 @@ public sealed class RobotEngine : MonoBehaviour
     // A carried item is lifted so its underside is this high: above the camera's view, forklift style.
     // Held at floor level it sat right in front of the lens and hid the floor and the drop zone.
     private const float CarryHeight = 0.9f, GripRest = 0.14f;
+    private const float MastTop = 1.5f; // gripper masts
+    // Highest point of the robot and its load: the masts, or the top of a lifted item.
+    private float RobotTop => held != null ? Mathf.Max(MastTop, 2f * holdPose.y - CarryHeight) : MastTop;
     private float gripLift = GripRest;
     private Transform gripCarriage;
     private Transform leftFinger, rightFinger;
@@ -188,6 +238,7 @@ public sealed class RobotEngine : MonoBehaviour
         BuildScene();
         RemoveDecorativeWarehouseBlockers();
         ClearRoundOnePlayArea();
+        MatchWarehouseColliders();
         StartListener();
         sceneReady = true;
         ShowInSceneView();
@@ -229,7 +280,7 @@ public sealed class RobotEngine : MonoBehaviour
                 listenerThread.Start();
                 listenerErrorLogged = false;
                 Debug.Log("RoboHalo engine listening on http://127.0.0.1:" + port + "/");
-                if (port != 8080) Debug.LogWarning("Port 8080 belongs to another Unity project. Start the Groq listener with --port " + port + ".");
+                if (port != 8080) Debug.LogWarning("Port 8080 belongs to another Unity project. The agent listener needs --port " + port + ".");
                 return;
             }
             catch (Exception)
@@ -287,6 +338,7 @@ public sealed class RobotEngine : MonoBehaviour
 
     private void Update()
     {
+        VoiceTick();
         // A script reload during Play kills the listener thread; bring the server back.
         if (sceneReady && Time.realtimeSinceStartup >= nextListenerAttempt && (listener == null || !listener.IsListening || listenerThread == null || !listenerThread.IsAlive))
         {
@@ -614,11 +666,12 @@ public sealed class RobotEngine : MonoBehaviour
     {
         point = default;
         var f = new Vector3(Mathf.Cos(headingDeg * Mathf.Deg2Rad), 0f, -Mathf.Sin(headingDeg * Mathf.Deg2Rad));
-        Vector3 centre = robotRoot.position + Vector3.up * 0.14f + f * HoldDistance;
-        foreach (var col in Physics.OverlapSphere(centre, GripperRadius, ~0, QueryTriggerInteraction.Ignore))
+        Vector3 at = robotRoot.position + f * HoldDistance;
+        Vector3 low = at + Vector3.up * 0.14f, high = at + Vector3.up * Mathf.Max(0.14f, RobotTop - GripperRadius);
+        foreach (var col in Physics.OverlapCapsule(low, high, GripperRadius, ~0, QueryTriggerInteraction.Ignore))
         {
             if (!BlocksGripper(col)) continue;
-            point = col.ClosestPoint(centre);
+            point = col.ClosestPoint((low + high) / 2f);
             return true;
         }
         return false;
@@ -627,8 +680,9 @@ public sealed class RobotEngine : MonoBehaviour
     // Anything the gripper could hit within `margin` of it at the current heading?
     private bool GripperNear(float margin)
     {
-        Vector3 centre = robotRoot.position + Vector3.up * 0.14f + Forward() * HoldDistance;
-        foreach (var col in Physics.OverlapSphere(centre, GripperRadius + margin, ~0, QueryTriggerInteraction.Ignore))
+        Vector3 at = robotRoot.position + Forward() * HoldDistance;
+        Vector3 low = at + Vector3.up * 0.14f, high = at + Vector3.up * Mathf.Max(0.14f, RobotTop - GripperRadius);
+        foreach (var col in Physics.OverlapCapsule(low, high, GripperRadius + margin, ~0, QueryTriggerInteraction.Ignore))
             if (BlocksGripper(col)) return true;
         return false;
     }
@@ -636,11 +690,12 @@ public sealed class RobotEngine : MonoBehaviour
     private bool GripperBlocked(Vector3 direction, float distance, out Vector3 point)
     {
         point = default;
-        Vector3 origin = robotRoot.position + Vector3.up * 0.14f + direction * (HoldDistance - 0.1f);
-        foreach (var hit in Physics.SphereCastAll(origin, GripperRadius, direction, distance, ~0, QueryTriggerInteraction.Ignore))
+        Vector3 at = robotRoot.position + direction * (HoldDistance - 0.1f);
+        Vector3 low = at + Vector3.up * 0.14f, high = at + Vector3.up * Mathf.Max(0.14f, RobotTop - GripperRadius);
+        foreach (var hit in Physics.CapsuleCastAll(low, high, GripperRadius, direction, distance, ~0, QueryTriggerInteraction.Ignore))
         {
             if (!BlocksGripper(hit.collider)) continue;
-            point = hit.distance > 0f ? hit.point : origin;
+            point = hit.distance > 0f ? hit.point : (low + high) / 2f;
             return true;
         }
         return false;
@@ -770,7 +825,7 @@ public sealed class RobotEngine : MonoBehaviour
         GUILayout.Space(8);
 
         // Keep the command field visible even when the Game view is short.
-        GUILayout.Label("AI COMMAND (GROQ VISION)", TextStyle(11, new Color(0.55f, 0.60f, 0.68f), FontStyle.Bold));
+        GUILayout.Label("AI COMMAND (CLAUDE VISION)", TextStyle(11, new Color(0.55f, 0.60f, 0.68f), FontStyle.Bold));
         GUILayout.BeginHorizontal();
         guiCommand = GUILayout.TextField(guiCommand, GUILayout.Height(28));
         if (GUILayout.Button("Send", ButtonStyle(AccentColor, Color.white), GUILayout.Width(64), GUILayout.Height(28)))
@@ -778,17 +833,21 @@ public sealed class RobotEngine : MonoBehaviour
             if (!string.IsNullOrWhiteSpace(guiCommand))
             {
                 pendingAgentCommand = guiCommand.Trim();
-                guiStatus = "Sent to Groq agent: " + pendingAgentCommand;
+                EnsureAgent();
             }
         }
-        if (GUILayout.Button(listening ? "..." : "Speak", ButtonStyle(listening ? new Color(0.80f, 0.28f, 0.28f) : CardColor, Color.white), GUILayout.Width(64), GUILayout.Height(28)))
+        if (GUILayout.Button(listening ? "Stop" : "Speak", ButtonStyle(listening ? new Color(0.80f, 0.28f, 0.28f) : CardColor, Color.white), GUILayout.Width(64), GUILayout.Height(28)))
         {
-            if (listening) StopListening("Stopped listening.");
+            if (listening) FinishRecording();
             else StartListening();
+            EnsureAgent();
         }
         GUILayout.EndHorizontal();
         if (!string.IsNullOrEmpty(voiceNote)) GUILayout.Label("Voice: " + voiceNote, TextStyle(11, new Color(1f, 0.82f, 0.45f)));
-        GUILayout.Label("Start python -m agent.scout --listen --port " + listenerPort + " first. The model sees only the robot camera.", TextStyle(10, new Color(0.70f, 0.74f, 0.82f)));
+        if (agentProcess != null && agentProcess.HasExited && agentProcess.ExitCode != 0)
+            agentNote = "The agent stopped. Check ANTHROPIC_API_KEY in " + agentFolder + "\\.env, or run: python -m agent.run_agent --listen --port " + listenerPort;
+        if (!string.IsNullOrEmpty(agentNote)) GUILayout.Label(agentNote, TextStyle(11, new Color(1f, 0.55f, 0.45f)));
+        GUILayout.Label("The model sees only the robot camera.", TextStyle(10, new Color(0.70f, 0.74f, 0.82f)));
         GUILayout.Space(8);
 
         // Camera switcher
@@ -903,7 +962,7 @@ public sealed class RobotEngine : MonoBehaviour
         requestBody = context.Request.HasEntityBody ? ReadBody(context) : "";
         try
         {
-            if (robotState == "Done" && method == "POST" && path != "/reset" && path != "/start" && path != "/run_builtin" && path != "/view" && path != "/speed" && path != "/obstacle" && path != "/dark" && path != "/agent_status") { Error(context, 409, "Run finished; start another command or reset"); return; }
+            if (robotState == "Done" && method == "POST" && path != "/reset" && path != "/start" && path != "/run_builtin" && path != "/view" && path != "/speed" && path != "/obstacle" && path != "/dark" && path != "/agent_status" && path != "/agent_heard") { Error(context, 409, "Run finished; start another command or reset"); return; }
             if (method == "GET" && path == "/state")
             {
                 var p = robotRoot.position;
@@ -916,11 +975,33 @@ public sealed class RobotEngine : MonoBehaviour
                 if (input != null && !string.IsNullOrEmpty(input.command)) guiStatus = "Agent: " + input.command;
                 Reply(context, new ActionOutput { success = true, ok = true });
             }
+            else if (method == "GET" && path == "/agent_audio")
+            {
+                // The latest voice recording (WAV), handed over once.
+                var audio = pendingAudio;
+                pendingAudio = null;
+                if (audio == null) { Error(context, 404, "No recording"); return; }
+                ReplyRaw(context, audio, "audio/wav");
+            }
+            else if (method == "POST" && path == "/agent_heard")
+            {
+                // What the agent process transcribed: shown in the command box.
+                var input = JsonUtility.FromJson<StartInput>(requestBody);
+                if (input != null && !string.IsNullOrWhiteSpace(input.command))
+                {
+                    guiCommand = input.command.Trim();
+                    voiceNote = "Heard: \"" + guiCommand + "\"";
+                    Debug.Log("Voice command: " + voiceNote);
+                }
+                else voiceNote = "Could not make out any words. Press Speak and try again.";
+                Reply(context, new ActionOutput { success = true, ok = true });
+            }
             else if (method == "GET" && path == "/agent_command")
             {
+                lastAgentPoll = Time.realtimeSinceStartup;
                 string command = pendingAgentCommand;
                 pendingAgentCommand = null;
-                Reply(context, new CommandOutput { command = command });
+                Reply(context, new CommandOutput { command = command, audio = pendingAudio != null });
             }
             else if (method == "GET" && path == "/look") ReplyImage(context);
             else if (method == "GET" && path == "/depth")
@@ -1361,7 +1442,10 @@ public sealed class RobotEngine : MonoBehaviour
         {
             sbyte result = 1;
             var c = CellCenter(x, z);
-            foreach (var col in Physics.OverlapSphere(new Vector3(c.x, floorHeight + 0.22f, c.y), Radius * 0.8f + gridMargin, ~0, QueryTriggerInteraction.Ignore))
+            float r = Radius * 0.8f + gridMargin;
+            var low = new Vector3(c.x, floorHeight + 0.22f, c.y);
+            var high = new Vector3(c.x, floorHeight + Mathf.Max(0.22f, RobotTop - r), c.y);
+            foreach (var col in Physics.OverlapCapsule(low, high, r, ~0, QueryTriggerInteraction.Ignore))
             {
                 var t = col.transform;
                 if (t == robotRoot || t.IsChildOf(robotRoot)) continue;
@@ -1590,8 +1674,9 @@ public sealed class RobotEngine : MonoBehaviour
         nearest = default;
         float nearestDistance = float.MaxValue;
         bool found = false;
-        Vector3 castOrigin = origin + Vector3.up * 0.22f;
-        foreach (var hit in Physics.SphereCastAll(castOrigin, Radius * 0.8f, direction, distance, ~0, QueryTriggerInteraction.Ignore))
+        // A capsule over the robot's whole height, so shelves, beams and overhangs count, not just things at wheel level.
+        Vector3 low = origin + Vector3.up * 0.22f, high = origin + Vector3.up * (RobotTop - Radius * 0.8f);
+        foreach (var hit in Physics.CapsuleCastAll(low, high, Radius * 0.8f, direction, distance, ~0, QueryTriggerInteraction.Ignore))
         {
             if (hit.collider == null || hit.transform == robotRoot || hit.transform.IsChildOf(robotRoot)) continue;
             // Ignore shallow warehouse floor meshes beneath the robot; keep all
@@ -1650,8 +1735,9 @@ public sealed class RobotEngine : MonoBehaviour
     private void OnDestroy()
     {
         listening = false;
+        try { if (agentProcess != null && !agentProcess.HasExited) agentProcess.Kill(); } catch (Exception) { } // the agent we started ends with Play
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-        if (dictation != null) { try { dictation.Dispose(); } catch (Exception) { } dictation = null; }
+        if (voiceDevice != null && Microphone.IsRecording(voiceDevice)) Microphone.End(voiceDevice);
 #endif
         if (listener != null) { listener.Stop(); listener.Close(); listener = null; }
         if (listenerThread != null && listenerThread.IsAlive) listenerThread.Join(1000);
@@ -1839,6 +1925,39 @@ public sealed class RobotEngine : MonoBehaviour
                 || name.Contains("Wall", StringComparison.OrdinalIgnoreCase)) continue;
             if (playArea.Intersects(collider.bounds)) collider.enabled = false;
         }
+    }
+
+    // Visible props must be solid and hidden ones must not be. The two passes above judge a prop by
+    // its collider and by its mesh separately, so a prop on the edge of the cleared area could stay
+    // visible with its collider off (the robot would drive through it). Some props have no collider at
+    // all. Line every visible prop up with a collider here; walls and the floor are left as they are.
+    private void MatchWarehouseColliders()
+    {
+        var warehouseScene = SceneManager.GetSceneByName("URPScene");
+        if (!warehouseScene.IsValid()) return;
+        int added = 0, enabled = 0, disabled = 0;
+        foreach (var root in warehouseScene.GetRootGameObjects())
+        foreach (var renderer in root.GetComponentsInChildren<Renderer>(false))
+        {
+            if (!(renderer is MeshRenderer)) continue;
+            string name = renderer.gameObject.name;
+            if (name.Equals("Floor", StringComparison.OrdinalIgnoreCase) || name.Contains("Wall", StringComparison.OrdinalIgnoreCase)) continue;
+            var own = renderer.GetComponents<Collider>();
+            if (!renderer.enabled)
+            {
+                foreach (var c in own) if (c.enabled) { c.enabled = false; disabled++; }
+                continue;
+            }
+            foreach (var c in own) if (!c.enabled) { c.enabled = true; enabled++; }
+            var b = renderer.bounds;
+            bool reachable = b.size.y > 0.08f && b.min.y < floorHeight + 2.2f; // not floor paint, not ceiling fittings
+            if (own.Length == 0 && reachable && renderer.GetComponentInParent<Collider>() == null && renderer.GetComponent<MeshFilter>() != null)
+            {
+                renderer.gameObject.AddComponent<BoxCollider>(); // sized to the mesh automatically
+                added++;
+            }
+        }
+        Debug.Log($"Warehouse props: {added} colliders added, {enabled} re-enabled on visible props, {disabled} turned off on hidden props.");
     }
 
     private Bounds GetRoundOnePlayArea()

@@ -13,10 +13,14 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from agent.builtin import run as run_builtin
+from agent.builtin import run as _run_builtin
 from agent.run_agent import SYSTEM, TOOLS, Engine
 
-E = Engine()
+E = Engine()  # finds the arena engine on 8080 or 8081
+
+
+def run_builtin(command, **kwargs):
+    return _run_builtin(command, engine=E, **kwargs)
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -403,3 +407,94 @@ def test_seeded_shuffle_is_repeatable_and_still_deliverable():
     for command in ("Bring the red cube", "Bring the blue sphere"):
         assert run_builtin(command)["outcome"] == "pass", command
     assert changed(view(0), default) < 0.0005, "a plain reset restores the default layout"
+
+
+# ---------- collisions: the planner should avoid every obstacle ----------
+
+def test_no_collisions_across_shuffled_layouts():
+    """All six deliveries on three layouts, with and without the detour wall: zero bumps."""
+    bumps = []
+    for seed, wall in ((0, False), (7, False), (21, True)):
+        E.call("/reset", {"seed": seed})
+        call("/obstacle", {"on": wall})
+        try:
+            for name in ("red sphere", "red cube", "blue sphere", "blue cube", "yellow cylinder", "yellow cone"):
+                result = run_builtin("Bring the " + name)
+                retries = call("/state")[1]["retries"]
+                assert result["outcome"] == "pass", (seed, name, result)
+                if retries:
+                    bumps.append((seed, wall, name, retries))
+        finally:
+            call("/obstacle", {"on": False})
+    assert not bumps, f"collisions (seed, wall, item, count): {bumps}"
+
+
+# ---------- extra walls: collision handling ----------
+# /obstacle {"on": true, "walls": 4} stands four walls around the robot's start: one straight ahead in each
+# of these headings, with open corners between them. {"on": true} alone is still the single detour wall.
+
+WALL_HEADINGS = (0, 90, 180, 270)
+
+
+def set_walls(count):
+    return call("/obstacle", {"on": count > 0, "walls": count})[1]
+
+
+def face(heading):
+    reset()
+    call("/start", {"command": "Bring the blue cube"})
+    if heading:
+        call("/turn", {"degrees": heading if heading <= 180 else heading - 360})
+
+
+def test_wall_count_can_be_set_and_plain_on_is_still_one_wall():
+    try:
+        assert set_walls(4)["walls"] == 4
+        assert call("/obstacle")[1]["on"] is True and call("/obstacle")[1]["walls"] == 4
+        assert call("/obstacle", {"on": True})[1]["walls"] == 1
+    finally:
+        assert set_walls(0)["on"] is False
+
+
+def test_each_wall_shows_in_depth_and_stops_the_robot():
+    open_depth = {}
+    for heading in WALL_HEADINGS:
+        face(heading)
+        open_depth[heading] = call("/depth")[1]
+    set_walls(4)
+    try:
+        for heading in WALL_HEADINGS:
+            face(heading)
+            depth = call("/depth")[1]
+            assert depth is not None and depth < 2.4, (heading, depth)            # the wall is nearer than open floor (about 2.9)
+            assert open_depth[heading] is None or depth <= open_depth[heading] + 0.01, (heading, depth, open_depth[heading])
+            travelled, hit = 0.0, None
+            for _ in range(3):
+                _, hit = call("/move", {"distance": 1.0})
+                travelled += hit["moved"]
+                if hit["collided"]:
+                    break
+            assert hit["collided"] is True, (heading, hit)                        # stopped by the wall, not driven through
+            assert travelled < 2.3, (heading, travelled)
+            state = call("/state")[1]
+            assert state["name"] == "Blocked" and state["retries"] == 1, (heading, state)
+            assert call("/move", {"distance": -0.4})[1]["collided"] is False     # it can back away again
+    finally:
+        set_walls(0)
+
+
+def test_scripted_fetch_and_go_to_get_past_four_walls():
+    reset()
+    set_walls(4)
+    try:
+        for command in ("Bring the red cube", "Bring the blue sphere"):
+            result = run_builtin(command)
+            assert result["outcome"] == "pass", result
+            assert call("/state")[1]["retries"] < 3
+        reset()
+        call("/start", {"command": "Bring the blue cube"})
+        start = call("/state")[1]
+        status, result = call("/go_to", {"x": start["x"] + 3.0, "y": start["y"]})   # straight through the east wall
+        assert status == 200 and result["reached"] is True and result["collided"] is False, result
+    finally:
+        set_walls(0)
