@@ -1,4 +1,4 @@
-# RoboHalo
+# RoboHalo for Hackoween Hackathon Nov,2026
 
 **Vision-guided robot fetching in simulation, with a path toward factory material handling.** RoboHalo began as a Membrane Robot Hackathon prototype: give a TurtleBot-style robot a plain-language instruction, let it inspect a forward camera, retrieve a matching colored shape, and deliver it to a marked zone. The current work includes a Unity engine, local robot HTTP API, Python runners, a Claude agent, run logs, and clip tooling. The warehouse scene is an active local integration and is separate from the version-controlled baseline.
 
