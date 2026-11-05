@@ -552,7 +552,7 @@ def run_from_args(command, args, engine=None, on_step=None):
 
 def serve_panel(engine, args):
     """Serve the Unity panel: a typed (Send) or spoken (Speak) request goes to Claude, Claude decides which
-    item it means from the camera views, and the engine's own scripted routine picks it up and drops it (agent.speak)."""
+    item it means from the camera views, and the engine's own test-run routine picks it up and drops it (agent.speak)."""
     from types import SimpleNamespace
     from agent import speak
     from agent.scout import voice_command

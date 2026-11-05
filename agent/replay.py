@@ -36,14 +36,14 @@ def _started(name):
 
 def _kind(name, summary):
     mode = (summary or {}).get("mode", "")
-    if name.startswith("speak-") or mode in ("decide_then_manual", "decide_then_scripted"):
+    if name.startswith("speak-") or mode.startswith("decide_then_"):
         return "Claude decides, manual run"
     if name.startswith("quick-"):
         return "Quick (demo)"
     if name.startswith("builtin-"):
-        return "Built-in (scripted)"
+        return "Test run (built-in)"
     if name.startswith("manual-") or mode == "manual_fixed_path":
-        return "Manual (scripted)"
+        return "Test run (manual)"
     if "-scout-" in name or mode == "scout":
         return "Scout"
     if "-groq-" in name:
@@ -99,6 +99,8 @@ def load_run(folder):
         outcome = summary.get("outcome") or ("no result" if steps else "")
         command = summary.get("command") or clip_meta.get("command", "")
         model = summary.get("model") or summary.get("mode", "")
+        if model == "manual_fixed_path":
+            model = "Test run (fixed path)"
     collisions = sum(1 for s in steps if (s.get("result") or {}).get("collided"))
     return {
         "id": name,

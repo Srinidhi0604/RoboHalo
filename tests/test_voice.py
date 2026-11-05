@@ -132,4 +132,4 @@ class SpeakDecisionTests(unittest.TestCase):
     def test_no_match_means_no_action(self):
         record, _, told, posts = self.run_speak({"found": False, "reason": "No ball in any view."})
         self.assertFalse([p for p in posts if p[0] == "/run_builtin"])
-        self.assertIn("nothing here fits", told[-1])
+        self.assertIn("Shape not found", told[-1])

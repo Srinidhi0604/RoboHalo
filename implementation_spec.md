@@ -6,13 +6,13 @@ Related documents: spec.md, spec_problem.md, PRD.md
 
 ## 1. Purpose
 
-This document defines the work still needed to satisfy the hackathon brief and prepare RoboHalo for a reproducible demo. It distinguishes code that exists from behavior that still needs implementation or live evidence. A script compiling or a scripted demo succeeding does not satisfy a camera-driven acceptance gate.
+This document defines the work still needed to satisfy the hackathon brief and prepare RoboHalo for a reproducible demo. It distinguishes code that exists from behavior that still needs implementation or live evidence. A script compiling or a test run succeeding does not satisfy a camera-driven acceptance gate.
 
 ## 2. Current implementation baseline
 
-The repository contains a Unity 6000.6.3f1 baseline scene and local HTTP engine on port 8080; a TurtleBot3 visual, primitive fetch objects, drop zone, camera, movement and collision handling; a Claude tool loop with constrained actions and JSONL logs; scripted runners for movement tests; and POV clip assembly with offline tests.
+The repository contains a Unity 6000.6.3f1 baseline scene and local HTTP engine on port 8080; a TurtleBot3 visual, primitive fetch objects, drop zone, camera, movement and collision handling; a Claude tool loop with constrained actions and JSONL logs; test runners for movement tests; and POV clip assembly with offline tests.
 
-The active warehouse project is separate from this repository and is not currently reproducible from a clean clone. Verify each implementation claim against the exact scene used for the live demo. Scripted runners are for plumbing checks and do not count as visual reasoning.
+The active warehouse project is separate from this repository and is not currently reproducible from a clean clone. Verify each implementation claim against the exact scene used for the live demo. Test runners are for plumbing checks and do not count as visual reasoning.
 
 ## 3. Workstream A: Phase 1 acceptance
 

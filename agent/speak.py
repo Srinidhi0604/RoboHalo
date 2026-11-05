@@ -5,7 +5,7 @@
 2. Claude is the decision maker only. It gets the transcribed request and one sheet of 8 camera
    views (a full circle), and answers with the colour and shape of the single item to fetch.
    It is told nothing about the scene: colour and shape come from the pixels.
-3. The decision is sent back to the Unity panel, and the engine's own scripted routine does the
+3. The decision is sent back to the Unity panel, and the engine's own test-run routine does the
    driving ("Bring the <colour> <shape>"). Claude does not steer in this mode.
 
 Because the engine's routine drives with its own knowledge of the scene, this is an operator/demo
@@ -78,7 +78,7 @@ def _decide(request, sheet, client, model):
 
 
 def handle(request, client, model, engine, tell=print, runs_dir="runs"):
-    """Request -> Claude's decision (sent back through `tell`) -> scripted fetch. Returns the run summary.
+    """Request -> Claude's decision (sent back through `tell`) -> test-run fetch. Returns the run summary.
 
     The run folder holds the same files as a camera-agent run: run.jsonl (one line per step, then the
     summary), the camera frames as PNG, clip_frames + clip.mp4 + clip.json, and replay.html.
@@ -108,8 +108,8 @@ def handle(request, client, model, engine, tell=print, runs_dir="runs"):
                "cost_estimate_usd": round(cost, 6), "run_number": count_run(runs_dir) if str(model).startswith("claude") else 0,
                "run_dir": str(folder)}
     if not choice["found"]:
-        summary["problem"] = "Claude found nothing that fits. " + choice["reason"]
-        tell("Claude decided: nothing here fits. " + choice["reason"])
+        summary["problem"] = "Shape not found. " + choice["reason"]
+        tell("Shape not found. " + choice["reason"])   # the request names no box or shape that is in view
     else:
         target = f"{choice['colour']} {choice['shape']}"
         tell(f"Claude decided: {target}. {choice['reason']}")
@@ -147,7 +147,11 @@ def handle(request, client, model, engine, tell=print, runs_dir="runs"):
         except Exception as error:  # the engine has no such item, or it was already delivered
             summary["problem"] = f"The robot could not act on '{target}': {error}"
             log("pickup", {"target": target}, {"ok": False, "error": str(error)}, None, "Manual pick could not start.")
-            tell(f"Claude decided: {target}, but the robot could not act on it ({error}).")
+            if isinstance(error, HTTPError) and error.code == 400:   # the robot knows no such item
+                summary["problem"] = f"Shape not found: there is no {target} to fetch."
+                tell(f"Shape not found: there is no {target} to fetch.")
+            else:
+                tell(f"Claude decided: {target}, but the robot could not act on it ({error}).")
     summary["step_count"] = len(steps)
     with (folder / "run.jsonl").open("w", encoding="utf-8") as out:
         for line in steps + [{"summary": summary}]:

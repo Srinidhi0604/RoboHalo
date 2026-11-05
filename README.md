@@ -68,7 +68,7 @@ The active warehouse project also has an on-screen controller for quick presets 
 | --- | --- | --- |
 | 0. Problem definition | Converted the hackathon brief into a full product PRD and a Phase 1 build contract. | `PRD.md`, `spec.md`. |
 | 1. Simulation baseline | Built the Unity room, TurtleBot visual, repeated colors and shapes, drop zone, movement/collision state machine and local HTTP API. | Open `RoboHalo.unity`; inspect `/state` and `/look`. |
-| 2. No-key movement | Added manual and built-in runners to check pickup, carry, drop and logging before spending model calls. | `agent/manual_agent.py` and `agent/builtin.py`; these are scripted demos. |
+| 2. No-key movement | Added manual and built-in runners to check pickup, carry, drop and logging before spending model calls. | `agent/manual_agent.py` and `agent/builtin.py`; these are test runs. |
 | 3. Vision agent | Added the Claude tool loop, one-action validation, frames, history and JSONL evidence. | `agent/run_agent.py`; camera-driven pass rates still require live demonstration. |
 | 4. Warehouse integration | Imported the warehouse sample and TurtleBot3 model into a separate local Unity project, enlarged and cleared the work area, and kept decorative assets around it. | Active local integration; merge into this repo before treating it as a reproducible release. |
 | 5. Video and feedback | Added POV clip generation. Hackathon feedback upload and full judged-run evidence remain product work. | `agent/clip.py`; see PRD for the Phase 2 acceptance gate. |
@@ -78,7 +78,7 @@ The active warehouse project also has an on-screen controller for quick presets 
 
 ### Groq vision agent with the local TurtleBot warehouse scene
 
-The separate Unity project at `E:\turtlebot3-unity-rossharp-main\turtlebot3-unity-rossharp-main` now queues text from its **AI COMMAND (GROQ VISION)** field. The Python process polls that queue, requests the robot camera/depth/state over local HTTP, sends the camera image and command to Groq, then executes one returned movement or pickup/drop tool at a time. The model receives no engine-supplied object catalog or target coordinates. Scripted buttons in Unity are labelled **DEBUG** and are not part of the image-driven run.
+The separate Unity project at `E:\turtlebot3-unity-rossharp-main\turtlebot3-unity-rossharp-main` now queues text from its **AI COMMAND (GROQ VISION)** field. The Python process polls that queue, requests the robot camera/depth/state over local HTTP, sends the camera image and command to Groq, then executes one returned movement or pickup/drop tool at a time. The model receives no engine-supplied object catalog or target coordinates. Test-run buttons in Unity are labelled **DEBUG** and are not part of the image-driven run.
 
 1. Open that Unity project and `Assets/Scenes/Tbot3SampleEnv.unity`; press Play. Check the Console says the RoboHalo engine is listening on `127.0.0.1:8080`.
 2. In PowerShell, from this repository root, run `python -m pip install -r requirements.txt`.
