@@ -498,3 +498,25 @@ def test_test_run_fetch_and_go_to_get_past_four_walls():
         assert status == 200 and result["reached"] is True and result["collided"] is False, result
     finally:
         set_walls(0)
+
+
+def test_a_gripper_finger_cannot_pass_through_a_wall_end():
+    """The robot body clears the end of a wall by a few centimetres, but a finger (0.36 m off the centre line)
+    would cut through it. The move has to stop when the finger tips reach the wall, well before the body does."""
+    reset()
+    set_walls(4)
+    try:
+        call("/start", {"command": "Bring the blue cube"})
+        call("/turn", {"degrees": 90})
+        assert call("/move", {"distance": 0.96})[1]["collided"] is False   # sideways until the centre line is 0.36 m past the wall end
+        assert call("/turn", {"degrees": -90})[1]["collided"] is False     # face the wall that stands at heading 0
+        travelled, hit = 0.0, None
+        for _ in range(4):
+            _, hit = call("/move", {"distance": 0.5})
+            travelled += hit["moved"]
+            if hit["collided"]:
+                break
+        assert hit["collided"] is True, ("the finger went through the wall end", travelled, hit)
+        assert 0.6 < travelled < 1.3, travelled   # finger tips reach the wall after about 0.9 m; the body would not until about 1.55 m
+    finally:
+        set_walls(0)
