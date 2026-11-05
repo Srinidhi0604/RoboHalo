@@ -123,7 +123,7 @@ def load_run(folder):
 
 def collect(runs_dir=RUNS):
     runs = [load_run(folder) for folder in sorted(Path(runs_dir).iterdir()) if folder.is_dir()] if Path(runs_dir).exists() else []
-    runs = [r for r in runs if r]
+    runs = [r for r in runs if r and r["kind"] not in ("Claude decides, manual run", "Test run (manual)")]
     runs.sort(key=lambda r: r["started"] or "", reverse=True)
     return runs
 

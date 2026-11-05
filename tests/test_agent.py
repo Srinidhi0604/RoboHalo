@@ -265,6 +265,25 @@ class GoToAndReplayTests(unittest.TestCase):
         self.assertNotIn("<b>thing</b>", page)
         self.assertIn("RoboHalo replays", index)                          # the index is rebuilt with the run
 
+    def test_report_excludes_manual_runs_without_deleting_them(self):
+        from agent.replay import collect, write_index
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, mode in (("manual-20261105-120000-a", "manual_fixed_path"),
+                               ("speak-20261105-120100-b", "decide_then_manual"),
+                               ("agent-20261105-120200-c", "camera")):
+                folder = root / name
+                folder.mkdir()
+                (folder / "run.jsonl").write_text(json.dumps({"step": 1}) + "\n" +
+                                                  json.dumps({"summary": {"mode": mode, "outcome": "pass"}}), encoding="utf-8")
+            runs = collect(root)
+            index = write_index(runs, root).read_text(encoding="utf-8")
+            self.assertEqual([r["id"] for r in runs], ["agent-20261105-120200-c"])
+            self.assertNotIn("manual-20261105-120000-a", index)
+            self.assertNotIn("speak-20261105-120100-b", index)
+            self.assertTrue((root / "manual-20261105-120000-a" / "run.jsonl").exists())
+
 
 class SearchNoteTests(unittest.TestCase):
     def test_status_lists_viewed_headings_and_stops_repeat_sweeps(self):
