@@ -181,6 +181,117 @@ def test_fail_wrong_object():
     assert state["outcome"] == "fail_wrong_object", state
 
 
+# ---------- A2: clock, responsiveness, stretch obstacle ----------
+
+@pytest.fixture(autouse=True, scope="module")
+def real_time_speed():
+    """Timing checks need 1x; restore whatever the operator had selected."""
+    try:
+        previous = E.call("/speed")["scale"]
+    except Exception:
+        yield
+        return
+    E.call("/speed", {"scale": 1.0})
+    yield
+    E.call("/speed", {"scale": previous})
+
+
+def timed(path, body):
+    start = time.time()
+    call(path, body)
+    return time.time() - start
+
+
+def test_move_and_turn_run_at_the_documented_speeds():
+    reset()
+    call("/start", {"command": "Bring the blue cube"})
+    move = timed("/move", {"distance": 1.0})
+    assert 0.9 <= move <= 1.6, f"1 m move took {move:.2f}s (expected ~1 s at 1 m/s)"
+    turn = timed("/turn", {"degrees": 90})
+    assert 0.9 <= turn <= 1.6, f"90 deg turn took {turn:.2f}s (expected ~1 s at 90 deg/s)"
+
+
+def test_reads_stay_responsive_during_a_move():
+    import threading
+    reset()
+    call("/start", {"command": "Bring the blue cube"})
+    started = time.time()
+    mover = threading.Thread(target=lambda: call("/move", {"distance": 1.0}))
+    mover.start()
+    time.sleep(0.25)
+    xs, latencies = [], []
+    while mover.is_alive():
+        t = time.time()
+        xs.append(call("/state")[1]["x"])
+        call("/depth")
+        assert call("/look")[1][:2] == bytes([0xFF, 0xD8])
+        latencies.append(time.time() - t)
+        time.sleep(0.05)
+    mover.join()
+    assert len(xs) >= 2, "state calls were queued until the move finished"
+    assert max(xs) > min(xs), "state did not show the robot moving"
+    assert max(latencies) < 0.8, f"slow read during motion: {max(latencies):.2f}s"
+
+
+def test_world_is_frozen_while_the_agent_waits():
+    import hashlib
+    reset()
+    call("/start", {"command": "Bring the blue cube"})
+    first = (call("/state")[1], hashlib.md5(call("/look")[1]).hexdigest())
+    time.sleep(3.0)                                  # a slow Claude call
+    second = (call("/state")[1], hashlib.md5(call("/look")[1]).hexdigest())
+    assert first == second
+
+
+def test_detour_wall_is_driven_around_not_through():
+    reset()
+    assert call("/obstacle", {"on": True})[1]["on"] is True
+    try:
+        for command in ("Bring the red cube", "Bring the yellow cylinder"):
+            result = run_builtin(command)
+            assert result["outcome"] == "pass", result
+        assert call("/state")[1]["retries"] < 3
+    finally:
+        call("/obstacle", {"on": False})
+    assert call("/obstacle")[1]["on"] is False
+
+
+# ---------- dark mode (demo only) ----------
+
+def look_array():
+    import io
+    import numpy as np
+    from PIL import Image
+    return np.asarray(Image.open(io.BytesIO(E.call("/look"))).convert("RGB"), dtype=int)
+
+
+def test_dark_mode_gives_monochrome_frames_and_restores_colour():
+    reset()
+    call("/turn", {"degrees": 40})                 # face the coloured objects
+    lit = look_array()
+    spread = lambda a: a.max(axis=2) - a.min(axis=2)
+    assert spread(lit).max() > 60, "lit scene should have colour"
+    try:
+        assert call("/dark", {"on": True})[1]["on"] is True
+        for _ in range(10):                        # lighting can take a few frames to settle
+            time.sleep(0.3)
+            dark = look_array()
+            if dark[180:300, 260:380].mean() > dark[:40].mean():
+                break
+        assert spread(dark).max() <= 6, "IR frame must be grey"  # JPEG chroma noise only
+        assert dark.mean() < lit.mean(), "room should be darker with the lights off"
+        assert dark[180:300, 260:380].mean() > dark[:40].mean(), "illuminator should light the area ahead"
+        result = run_builtin("Bring the tallest object", record=True)
+        assert result["outcome"] == "pass"
+        assert result["clip"]["ok"], result["clip"]
+    finally:
+        call("/dark", {"on": False})
+    time.sleep(0.3)
+    reset()
+    call("/turn", {"degrees": 40})
+    assert spread(look_array()).max() > 60, "colour should return with the lights"
+
+
 # ---------- leak checks (static) ----------
 
 def test_agent_prompt_and_tools_describe_no_scene():
@@ -250,3 +361,45 @@ def test_turning_the_gripper_into_a_wall_is_a_collision():
     _, away = call("/turn", {"degrees": 90})     # turning away from contact is always allowed
     assert away["collided"] is False
     assert call("/state")[1]["retries"] == 2
+
+
+# ---------- /go_to (engine path-finding) and seeded layouts ----------
+
+def test_go_to_routes_around_the_wall_and_honours_stop_short():
+    reset()
+    call("/start", {"command": "Bring the blue cube"})
+    start = call("/state")[1]
+    target = (start["x"], start["y"] - 4.0)          # straight through where the detour wall stands
+    call("/obstacle", {"on": True})
+    try:
+        status, result = call("/go_to", {"x": target[0], "y": target[1]})
+        assert status == 200 and result["reached"] is True and result["collided"] is False, result
+        state = call("/state")[1]
+        assert abs(state["x"] - target[0]) < 0.4 and abs(state["y"] - target[1]) < 0.4, state
+        assert state["retries"] == 0
+        _, back = call("/go_to", {"x": start["x"], "y": start["y"], "stop_short": 1.0})
+        after = call("/state")[1]
+        gap = ((after["x"] - start["x"]) ** 2 + (after["y"] - start["y"]) ** 2) ** 0.5
+        assert back["reached"] is True and 0.7 < gap < 1.4, (back, gap)
+    finally:
+        call("/obstacle", {"on": False})
+    assert call("/go_to", {"x": 999, "y": 0})[0] == 400
+
+
+def test_seeded_shuffle_is_repeatable_and_still_deliverable():
+    def view(seed):
+        E.call("/reset", {"seed": seed})
+        call("/turn", {"degrees": 40})
+        return look_array()
+
+    def changed(a, b):
+        return float((abs(a - b).max(axis=2) > 40).mean())
+
+    default, first, other, again = view(0), view(7), view(8), view(7)
+    assert changed(first, again) < 0.0005, "same seed must give the same layout"
+    assert changed(first, default) > 0.002, "seed 7 should differ from the default layout"
+    assert changed(first, other) > 0.002, "different seeds should differ"
+    E.call("/reset", {"seed": 7})
+    for command in ("Bring the red cube", "Bring the blue sphere"):
+        assert run_builtin(command)["outcome"] == "pass", command
+    assert changed(view(0), default) < 0.0005, "a plain reset restores the default layout"
