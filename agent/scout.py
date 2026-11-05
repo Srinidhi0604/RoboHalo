@@ -159,7 +159,8 @@ def ahead(state, distance, offset_degrees=0.0):
 
 
 class Scout:
-    def __init__(self, client, model, engine=None, runs_dir="runs", say=print, max_model_calls=16, use_sheet=None):
+    def __init__(self, client, model, engine=None, runs_dir="runs", say=print, max_model_calls=16, use_sheet=None, record_clip=False):
+        self.record_clip = record_clip   # also record the robot-camera clip (clip_frames, clip.mp4)
         # The full-circle sheet saves model calls and handles comparative requests ("the tallest one"),
         # but small models misread its small views, so it is off for them unless asked for.
         self.use_sheet = use_sheet if use_sheet is not None else not str(model).lower().startswith(("qwen", "meta-llama", "llama"))
@@ -314,7 +315,7 @@ class Scout:
     def fetch(self):
         report = self.find_target()
         if report is None:
-            return "I looked all the way round and could not see anything that matches."
+            return "Shape not found: I looked all the way round and could not see anything that matches."
         problem = self.approach(report)
         if problem:
             return problem
@@ -367,11 +368,14 @@ class Scout:
         self.run_dir = Path(self.runs_dir) / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-scout-" + uuid.uuid4().hex[:6])
         self.run_dir.mkdir(parents=True)
         problem = None
+        start = {"command": command}
+        if self.record_clip:
+            start["record_dir"] = str((self.run_dir / "clip_frames").resolve())
         with (self.run_dir / "run.jsonl").open("w", encoding="utf-8") as self.log:
-            started = call_engine(self.engine, "/start", {"command": command})
+            started = call_engine(self.engine, "/start", start)
             if started.get("error"):   # e.g. still holding something from an abandoned run
                 call_engine(self.engine, "/reset", {})
-                started = call_engine(self.engine, "/start", {"command": command})
+                started = call_engine(self.engine, "/start", start)
             if started.get("error"):
                 problem = "The robot could not start: " + started["error"]
             else:
@@ -387,13 +391,22 @@ class Scout:
             outcome = final.get("outcome") or "fail_not_reached"
             summary = {"command": command, "outcome": outcome, "step_count": self.step, "model_calls": self.model_calls,
                        "retries": final.get("retries"), "model": self.model, "mode": "scout", "run_dir": str(self.run_dir), "problem": problem}
+            if self.record_clip:
+                try:
+                    from agent.run_agent import finish_clip
+                    summary["clip"] = finish_clip(self.engine, self.run_dir, command)
+                except Exception as error:
+                    summary["clip"] = {"ok": False, "problems": [str(error)]}
             self.log.write(json.dumps({"summary": summary}, separators=(",", ":")) + "\n")
         try:
             from agent.replay import write_replay
             write_replay(self.run_dir)
         except Exception:
             pass
-        self.tell(("Done: delivered. " if outcome == "pass" else f"Not completed ({outcome}). " + (problem or "")) + f" [{self.model_calls} model calls]")
+        if problem and problem.startswith("Shape not found"):
+            self.tell(problem)
+        else:
+            self.tell(("Done: delivered. " if outcome == "pass" else f"Not completed ({outcome}). " + (problem or "")) + f" [{self.model_calls} model calls]")
         return summary
 
 

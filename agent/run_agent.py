@@ -68,11 +68,11 @@ What you can sense:
 - Robot state: whether the gripper is holding something and how many collisions have happened (3 collisions end the run as a failure).
 
 How to work, one tool call per step:
-1. Read the command carefully. Commands can need reasoning, for example "the round one" or "the tallest object". Decide which object fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. Some things in view may be fixtures or stored goods that the robot cannot take. When several things could fit the command, prefer one standing by itself on open floor, and treat a pickup that fails twice at close range as proof that thing is not the target.
+1. Read the command carefully. Commands can need reasoning, for example "the round one" or "the tallest object". Decide which object fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. If a pickup fails twice at close range, that thing cannot be picked up, so it is not the target: go to the next best candidate.
 2. To search, turn exactly 45 degrees, always in the same direction, and look again. Eight looks cover a full circle; the status lists the headings you have already viewed from this spot, so never view one twice. If something in view clearly fits the command, go to it at once. Otherwise finish the circle before driving anywhere, noting each possible candidate and its heading in your sentence; then check the candidates, nearest first. Never drive off toward something you cannot identify while part of the circle is still unseen. If nothing fits after a full circle, drive about 1-2 m toward open floor and search again. If nothing fits after full circles from three spots, call fail and say what you saw instead.
 3. Steer so the target is in the middle of the image. An object left of centre needs a negative (left) turn; right of centre needs a positive turn. With a 90 degree field of view, an object at the left or right image edge is about 45 degrees off, and one halfway between the centre and an edge about 25. Turn by the whole offset in one go. A target inside the middle third of the image is centred enough: do not turn, drive, and correct only if it leaves the middle third. Never follow a turn with a turn back the other way.
 4. Approach in steps: use moves of up to 1 m while far, then 0.2-0.3 m when close. Re-centre with small turns as you go. When the target sits between the gripper fingers at the bottom of the image (depth_m 0.25 or less), call pickup. If pickup returns ok=false you are not close enough or not centred: never call pickup twice from the same pose. Move 0.1 m forward (the open fingers pass either side of the object) or re-centre, then try again.
-5. Whenever the drop zone is in view, at any point in the run, say so in your sentence with roughly where it is (for example "drop zone ahead-left, about 3 m"). Your earlier sentences are shown back to you with the position and heading you had, so after a pickup you can head straight back to the zone instead of searching again. A drop zone is a marked area you could set something down on, not a painted line. The object lands just below the bottom of the image, where you cannot see, so drop only when the zone fills the whole bottom edge of the image, from the left corner to the right corner. If any part of the bottom edge is still bare floor you are at the zone's border and the drop will miss: move 0.4 m forward and look again.
+5. Whenever the drop zone is in view, at any point in the run, say so in your sentence with roughly where it is (for example "drop zone ahead-left, about 3 m"). Your earlier sentences are shown back to you with the position and heading you had, so after a pickup you can head straight back to the zone instead of searching again. The object lands just below the bottom of the image, where you cannot see, so drop only when the zone fills the whole bottom edge of the image, from the left corner to the right corner. If any part of the bottom edge is still bare floor you are at the zone's border and the drop will miss: move 0.4 m forward and look again.
 6. If a move or turn reports collided=true, never repeat it. After a blocked move, back up or turn 30-60 degrees away and take a different path. After a blocked turn (a carried object swings wide), turn the other way round instead, or back up 0.3 m first.
 7. Be efficient. Aim to finish in about 25 steps; the run is stopped at 60.
 """ + GO_TO_HINT + """
@@ -129,7 +129,7 @@ What you can sense:
 - Robot state: whether the robot is carrying something and how many collisions have happened (3 collisions end the run as a failure).
 
 How to work, one tool call per step:
-1. Read the command carefully: which colour, which shape, how many. Commands can need reasoning, for example "the tallest one". Decide what fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. Some things in view may be fixtures or stored goods that the robot cannot take. When several things could fit the command, prefer one standing by itself on open floor, and treat a pickup that fails twice at close range as proof that thing is not the target.
+1. Read the command carefully: which colour, which shape, how many. Commands can need reasoning, for example "the tallest one". Decide what fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. If a pickup fails twice at close range, that thing cannot be picked up, so it is not the target: go to the next best candidate.
 2. To search, turn exactly 45 degrees, always in the same direction, and look again. Eight looks cover a full circle; the status lists the headings you have already viewed from this spot, so never view one twice. If something in view clearly fits the command, go to it at once. Otherwise finish the circle before driving anywhere, noting each possible candidate and its heading in your sentence; then check the candidates, nearest first. Never drive off toward something you cannot identify while part of the circle is still unseen. If nothing fits after a full circle, drive 1-2 m toward open floor and search again. If nothing fits after full circles from three spots, call fail and say what you saw instead.
 3. Steer so the target is in the middle of the image. A target left of centre needs a negative (left) turn; right of centre needs a positive turn. With a 90 degree field of view, a target at the left or right image edge is about 45 degrees off, and one halfway between the centre and an edge about 25. Turn by the whole offset in one go. A target inside the middle third of the image is centred enough: do not turn, drive, and correct only if it leaves the middle third. Never follow a turn with a turn back the other way.
 4. Approach in steps: moves of up to 1 m while far, then 0.2-0.4 m when close, re-centring with small turns. When the target is centred and large in the image, with depth_m around 1.2 or less, call pickup. Do not drive into it: touching anything counts as a collision.
@@ -551,14 +551,12 @@ def run_from_args(command, args, engine=None, on_step=None):
 
 
 def serve_panel(engine, args):
-    """Serve the Unity panel: a typed (Send) or spoken (Speak) request goes to Claude, Claude decides which
-    item it means from the camera views, and the engine's own test-run routine picks it up and drops it (agent.speak)."""
+    """Serve the Unity panel: a typed (Send) or spoken (Speak) request goes to Claude, which decides from camera
+    views which item is meant and where it and the drop zone are. Robot code then picks the item up and drops it,
+    steering only by those answers, the depth reading and /go_to (agent.scout). Nothing the engine knows about
+    the objects is used, by Claude or by the driving code."""
     from types import SimpleNamespace
-    from agent import speak
-    from agent.scout import voice_command
-
-    def tell(text):
-        call_engine(engine, "/agent_status", {"command": text})  # the line under the command box, where the engine has one
+    from agent.scout import Scout, voice_command
 
     while True:
         try:
@@ -570,7 +568,7 @@ def serve_panel(engine, args):
                 time.sleep(0.5)
                 continue
             client, model, _ = make_client(args.provider, args.model)
-            print(json.dumps(speak.handle(command, client, model, engine, tell), indent=2), flush=True)
+            print(json.dumps(Scout(client, model, engine, record_clip=True).run(command), indent=2), flush=True)
         except KeyboardInterrupt:
             break
         except Exception as error:  # Unity restarting or a failed run must not kill the listener
