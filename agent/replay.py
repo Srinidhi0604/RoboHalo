@@ -37,13 +37,13 @@ def _started(name):
 def _kind(name, summary):
     mode = (summary or {}).get("mode", "")
     if name.startswith("speak-") or mode.startswith("decide_then_"):
-        return "Claude decides, manual run"
+        return "Claude selects, engine executes"
     if name.startswith("quick-"):
         return "Quick (demo)"
     if name.startswith("builtin-"):
         return "Test run (built-in)"
     if name.startswith("manual-") or mode == "manual_fixed_path":
-        return "Test run (manual)"
+        return "Fixed-path test"
     if "-scout-" in name or mode == "scout":
         return "Scout"
     if "-groq-" in name:
@@ -123,7 +123,7 @@ def load_run(folder):
 
 def collect(runs_dir=RUNS):
     runs = [load_run(folder) for folder in sorted(Path(runs_dir).iterdir()) if folder.is_dir()] if Path(runs_dir).exists() else []
-    runs = [r for r in runs if r and r["kind"] not in ("Claude decides, manual run", "Test run (manual)")]
+    runs = [r for r in runs if r]   # every run type is listed; the "run type" filter and the per-type table tell them apart
     runs.sort(key=lambda r: r["started"] or "", reverse=True)
     return runs
 

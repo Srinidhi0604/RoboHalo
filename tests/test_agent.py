@@ -265,7 +265,7 @@ class GoToAndReplayTests(unittest.TestCase):
         self.assertNotIn("<b>thing</b>", page)
         self.assertIn("RoboHalo replays", index)                          # the index is rebuilt with the run
 
-    def test_report_excludes_manual_runs_without_deleting_them(self):
+    def test_report_lists_manual_runs_under_their_own_run_type(self):
         from agent.replay import collect, write_index
 
         with tempfile.TemporaryDirectory() as directory:
@@ -279,10 +279,14 @@ class GoToAndReplayTests(unittest.TestCase):
                                                   json.dumps({"summary": {"mode": mode, "outcome": "pass"}}), encoding="utf-8")
             runs = collect(root)
             index = write_index(runs, root).read_text(encoding="utf-8")
-            self.assertEqual([r["id"] for r in runs], ["agent-20261105-120200-c"])
-            self.assertNotIn("manual-20261105-120000-a", index)
-            self.assertNotIn("speak-20261105-120100-b", index)
-            self.assertTrue((root / "manual-20261105-120000-a" / "run.jsonl").exists())
+            self.assertEqual(len(runs), 3)
+            self.assertIn("manual-20261105-120000-a", index)
+            self.assertIn("speak-20261105-120100-b", index)
+            kinds = {r["id"]: r["kind"] for r in runs}
+            self.assertEqual(kinds["manual-20261105-120000-a"], "Fixed-path test")
+            self.assertEqual(kinds["speak-20261105-120100-b"], "Claude selects, engine executes")
+            self.assertNotIn("manual run", index.lower())
+            self.assertNotEqual(kinds["speak-20261105-120100-b"], kinds["agent-20261105-120200-c"])   # never mixed with camera-agent runs
 
 
 class SearchNoteTests(unittest.TestCase):
