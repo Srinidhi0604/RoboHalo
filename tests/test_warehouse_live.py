@@ -14,7 +14,7 @@ import pytest
 
 from agent.run_agent import Engine
 
-E = Engine()
+E = Engine("http://127.0.0.1:8080")  # the warehouse engine always uses 8080
 STATE_KEYS = {"name", "state", "outcome", "x", "y", "heading", "holding", "retry_count", "retries"}
 ACTION_KEYS = {"success", "collided", "in_zone", "ok", "moved", "heading"}
 

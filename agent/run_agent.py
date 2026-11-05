@@ -68,7 +68,7 @@ What you can sense:
 - Robot state: whether the gripper is holding something and how many collisions have happened (3 collisions end the run as a failure).
 
 How to work, one tool call per step:
-1. Read the command carefully. Commands can need reasoning, for example "the round one" or "the tallest object". Decide which object fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing.
+1. Read the command carefully. Commands can need reasoning, for example "the round one" or "the tallest object". Decide which object fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. Some things in view may be fixtures or stored goods that the robot cannot take. When several things could fit the command, prefer one standing by itself on open floor, and treat a pickup that fails twice at close range as proof that thing is not the target.
 2. To search, turn exactly 45 degrees, always in the same direction, and look again. Eight looks cover a full circle; the status lists the headings you have already viewed from this spot, so never view one twice. If something in view clearly fits the command, go to it at once. Otherwise finish the circle before driving anywhere, noting each possible candidate and its heading in your sentence; then check the candidates, nearest first. Never drive off toward something you cannot identify while part of the circle is still unseen. If nothing fits after a full circle, drive about 1-2 m toward open floor and search again. If nothing fits after full circles from three spots, call fail and say what you saw instead.
 3. Steer so the target is in the middle of the image. An object left of centre needs a negative (left) turn; right of centre needs a positive turn. With a 90 degree field of view, an object at the left or right image edge is about 45 degrees off, and one halfway between the centre and an edge about 25. Turn by the whole offset in one go. A target inside the middle third of the image is centred enough: do not turn, drive, and correct only if it leaves the middle third. Never follow a turn with a turn back the other way.
 4. Approach in steps: use moves of up to 1 m while far, then 0.2-0.3 m when close. Re-centre with small turns as you go. When the target sits between the gripper fingers at the bottom of the image (depth_m 0.25 or less), call pickup. If pickup returns ok=false you are not close enough or not centred: never call pickup twice from the same pose. Move 0.1 m forward (the open fingers pass either side of the object) or re-centre, then try again.
@@ -129,7 +129,7 @@ What you can sense:
 - Robot state: whether the robot is carrying something and how many collisions have happened (3 collisions end the run as a failure).
 
 How to work, one tool call per step:
-1. Read the command carefully: which colour, which shape, how many. Commands can need reasoning, for example "the tallest one". Decide what fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing.
+1. Read the command carefully: which colour, which shape, how many. Commands can need reasoning, for example "the tallest one". Decide what fits by comparing what you see. A command that compares (tallest, biggest, nearest to something) can only be answered once you have seen the whole room: finish the full circle before choosing. Some things in view may be fixtures or stored goods that the robot cannot take. When several things could fit the command, prefer one standing by itself on open floor, and treat a pickup that fails twice at close range as proof that thing is not the target.
 2. To search, turn exactly 45 degrees, always in the same direction, and look again. Eight looks cover a full circle; the status lists the headings you have already viewed from this spot, so never view one twice. If something in view clearly fits the command, go to it at once. Otherwise finish the circle before driving anywhere, noting each possible candidate and its heading in your sentence; then check the candidates, nearest first. Never drive off toward something you cannot identify while part of the circle is still unseen. If nothing fits after a full circle, drive 1-2 m toward open floor and search again. If nothing fits after full circles from three spots, call fail and say what you saw instead.
 3. Steer so the target is in the middle of the image. A target left of centre needs a negative (left) turn; right of centre needs a positive turn. With a 90 degree field of view, a target at the left or right image edge is about 45 degrees off, and one halfway between the centre and an edge about 25. Turn by the whole offset in one go. A target inside the middle third of the image is centred enough: do not turn, drive, and correct only if it leaves the middle third. Never follow a turn with a turn back the other way.
 4. Approach in steps: moves of up to 1 m while far, then 0.2-0.4 m when close, re-centring with small turns. When the target is centred and large in the image, with depth_m around 1.2 or less, call pickup. Do not drive into it: touching anything counts as a collision.
@@ -162,16 +162,32 @@ def detect_robot(engine):
         return "gripper"
 
 
+def find_engine_url():
+    """Which engine to drive. ROBOHALO_ENGINE_URL wins; otherwise the TurtleBot arena engine on 8080 or
+    8081 (it moves to 8081 when the warehouse project holds 8080); otherwise whatever is on 8080."""
+    if os.getenv("ROBOHALO_ENGINE_URL"):
+        return os.environ["ROBOHALO_ENGINE_URL"].rstrip("/")
+    for port in (8080, 8081):
+        try:
+            with urlopen(Request(f"http://127.0.0.1:{port}/view"), timeout=1.5) as response:
+                if response.status == 200:
+                    return f"http://127.0.0.1:{port}"   # only the arena engine has /view
+        except Exception:
+            continue
+    return "http://127.0.0.1:8080"
+
+
 class Engine:
-    def __init__(self, base="http://127.0.0.1:8080"):
-        self.base = base.rstrip("/")
+    def __init__(self, base=None):
+        self.base = (base or find_engine_url()).rstrip("/")
 
     def call(self, path, body=None, timeout=30):
         data = None if body is None else json.dumps(body).encode()
         request = Request(self.base + path, data=data, headers={"Content-Type": "application/json"})
         with urlopen(request, timeout=timeout) as response:
             content = response.read()
-            return content if response.headers.get_content_type() == "image/jpeg" else json.loads(content)
+            kind = response.headers.get_content_type()
+            return json.loads(content) if kind == "application/json" or kind == "text/plain" else content   # images and audio stay bytes
 
 
 NL = "\n"
@@ -212,9 +228,9 @@ def status_text(step, depth, state, has_image):
     if state.get("pickup_failed"):
         lines.append("The pickup failed, so the target is not within reach yet. Do not call pickup again from this pose: "
                      "move about 0.1 m closer or re-centre first. The image is the same view as before.")
-    if state.get("pickup_fails", 0) >= 3:
-        lines.append(f"{state['pickup_fails']} pickups in a row have failed. If you were close and centred, this thing cannot be "
-                     "picked up, so it is not what the command means: leave it and look for another candidate.")
+    if state.get("pickup_fails", 0) >= 2:
+        lines.append(f"{state['pickup_fails']} pickups in a row have failed. If it was centred with depth_m at 0.25 or less, this thing "
+                     "cannot be picked up, so it is not what the command means: leave it and go to the next best candidate in your notes.")
     if state.get("dithering"):
         lines.append("Your last two turns were small and cancelled each other out. The target is centred enough: do not turn again, drive toward it now.")
     if not has_image:
@@ -528,10 +544,38 @@ def add_provider_args(parser):
     parser.add_argument("--no-go-to", action="store_true", help="move and turn only (stretch goal: Claude plans the whole path)")
 
 
-def run_from_args(command, args, engine=None):
+def run_from_args(command, args, engine=None, on_step=None):
     client, model, provider = make_client(args.provider, args.model)
     steps = args.max_steps or (MAX_STEPS if provider == "claude" else GROQ_TEST_STEPS)
-    return run(command, client, model, engine, max_steps=min(steps, MAX_STEPS), record=not args.no_record, allow_go_to=not args.no_go_to)
+    return run(command, client, model, engine, max_steps=min(steps, MAX_STEPS), record=not args.no_record, allow_go_to=not args.no_go_to, on_step=on_step)
+
+
+def serve_panel(engine, args):
+    """Serve the Unity panel: a typed (Send) or spoken (Speak) request goes to Claude, Claude decides which
+    item it means from the camera views, and the engine's own scripted routine picks it up and drops it (agent.speak)."""
+    from types import SimpleNamespace
+    from agent import speak
+    from agent.scout import voice_command
+
+    def tell(text):
+        call_engine(engine, "/agent_status", {"command": text})  # the line under the command box, where the engine has one
+
+    while True:
+        try:
+            waiting = engine.call("/agent_command")
+            command = waiting.get("command")
+            if not command and waiting.get("audio"):
+                command = voice_command(SimpleNamespace(engine=engine))  # None if no words could be made out
+            if not command:
+                time.sleep(0.5)
+                continue
+            client, model, _ = make_client(args.provider, args.model)
+            print(json.dumps(speak.handle(command, client, model, engine, tell), indent=2), flush=True)
+        except KeyboardInterrupt:
+            break
+        except Exception as error:  # Unity restarting or a failed run must not kill the listener
+            print(f"Listener: {error}", flush=True)
+            time.sleep(2)
 
 
 def main():
@@ -549,18 +593,7 @@ def main():
         return
     make_client(args.provider, args.model)  # fail now, not on the first command, if no key
     print(f"Waiting for Unity AI COMMAND > Send at http://127.0.0.1:{args.port}/ ...", flush=True)
-    while True:
-        try:
-            command = engine.call("/agent_command").get("command")
-            if command:
-                print(json.dumps(run_from_args(command, args, engine), indent=2), flush=True)
-            else:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            break
-        except Exception as error:  # Unity restarting or a failed run must not kill the listener
-            print(f"Listener: {error}", flush=True)
-            time.sleep(2)
+    serve_panel(engine, args)
 
 
 if __name__ == "__main__":

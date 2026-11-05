@@ -411,11 +411,28 @@ def run_fast(scout, command):
     return record
 
 
+def voice_command(scout):
+    """Fetch the Speak button's recording from Unity, transcribe it, and show the words in the panel."""
+    from urllib.error import HTTPError
+    from agent.transcribe import transcribe
+    try:
+        wav = scout.engine.call("/agent_audio")
+    except HTTPError:
+        return None
+    text = transcribe(wav, say=lambda line: print(line, flush=True))
+    print(f'Heard: "{text}"', flush=True)
+    call_engine(scout.engine, "/agent_heard", {"command": text})
+    return text or None
+
+
 def listen(scout, poll=0.5, fast=False):
     print(f"Waiting for the Unity panel: type in AI COMMAND and press Send ({scout.engine.base})", flush=True)
     while True:
         try:
-            command = scout.engine.call("/agent_command").get("command")
+            waiting = scout.engine.call("/agent_command")
+            command = waiting.get("command")
+            if not command and waiting.get("audio"):
+                command = voice_command(scout)
             if command:
                 print(json.dumps(run_fast(scout, command) if fast else scout.run(command), indent=2), flush=True)
             else:

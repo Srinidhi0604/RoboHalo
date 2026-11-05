@@ -97,3 +97,39 @@ class VoiceFallbackTests(unittest.TestCase):
         self.assertEqual(command, "Bring the red cube")
         self.assertTrue(any("Voice input unavailable" in line for line in said))
         self.assertIsNone(voice.hear_command(broken, auto_yes=True, say=lambda line: None))
+
+
+class SpeakDecisionTests(unittest.TestCase):
+    """Speak: Claude only decides colour + shape; the engine's routine acts on that decision."""
+
+    def run_speak(self, answer):
+        from types import SimpleNamespace as NS
+        from agent import speak
+        calls, told = [], []
+        client = NS(beta=NS(messages=NS(create=lambda **kw: calls.append(kw) or NS(content=[NS(type="tool_use", name="decide", input=answer)]))))
+        tiny = __import__("io").BytesIO()
+        __import__("PIL.Image").Image.new("RGB", (8, 8)).save(tiny, "JPEG")
+
+        class Engine:
+            posts = []
+            def call(self, path, body=None, timeout=30):
+                if body is not None: self.posts.append((path, body))
+                return tiny.getvalue() if path == "/look" else {"state": "Done", "outcome": "pass"} if path == "/state" else {"ok": True}
+        with tempfile.TemporaryDirectory() as folder:
+            record = speak.handle("bring the read ball", client, "claude-opus-5-5", Engine(), told.append, folder)
+            run = next(Path(folder).glob("speak-*"))
+            self.assertTrue({"run.jsonl", "replay.html", "frame-001.png", "frame-009.png"} <= {f.name for f in run.iterdir()})
+        return record, calls, told, Engine.posts
+
+    def test_decision_is_sent_back_then_the_engine_acts(self):
+        record, calls, told, posts = self.run_speak({"found": True, "colour": "red", "shape": "sphere", "view": 3, "reason": "A red ball in view 3."})
+        self.assertEqual(len(calls), 1)                                            # one decision call, no driving by the model
+        self.assertTrue(any("Claude decided: red sphere" in line for line in told))
+        self.assertIn("Bring the red sphere", [b["command"] for p, b in posts if p == "/run_builtin"])
+        self.assertEqual(record["outcome"], "pass")
+        self.assertEqual(record["step_count"], 11)   # 8 looks, 1 decision, manual pickup, manual drop
+
+    def test_no_match_means_no_action(self):
+        record, _, told, posts = self.run_speak({"found": False, "reason": "No ball in any view."})
+        self.assertFalse([p for p in posts if p[0] == "/run_builtin"])
+        self.assertIn("nothing here fits", told[-1])

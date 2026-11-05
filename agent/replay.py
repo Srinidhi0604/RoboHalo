@@ -36,6 +36,8 @@ def _started(name):
 
 def _kind(name, summary):
     mode = (summary or {}).get("mode", "")
+    if name.startswith("speak-") or mode in ("decide_then_manual", "decide_then_scripted"):
+        return "Claude decides, manual run"
     if name.startswith("quick-"):
         return "Quick (demo)"
     if name.startswith("builtin-"):

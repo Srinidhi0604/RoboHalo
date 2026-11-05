@@ -184,3 +184,25 @@ class ScoutRunTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoicePathTests(unittest.TestCase):
+    def test_recording_is_fetched_transcribed_shown_and_returned(self):
+        import agent.transcribe as transcribe_module
+
+        class AudioWorld(World):
+            def call(self, path, body=None, timeout=30):
+                if path == "/agent_audio":
+                    self.calls.append((path, body))
+                    return b"RIFF....WAVE"
+                return super().call(path, body, timeout)
+
+        world, original = AudioWorld(), transcribe_module.transcribe
+        transcribe_module.transcribe = lambda wav, say=print: "Bring me the tallest object." if wav.startswith(b"RIFF") else ""
+        try:
+            s = scout.Scout(Eyes([]), "m", world, say=lambda line: None)
+            text = scout.voice_command(s)
+        finally:
+            transcribe_module.transcribe = original
+        self.assertEqual(text, "Bring me the tallest object.")
+        self.assertIn(("/agent_heard", {"command": "Bring me the tallest object."}), world.calls)
