@@ -8,8 +8,10 @@ active. This turns them into the clip the crowd watches:
   - nothing else drawn: no team name, logo or code
 
 Usage: python -m agent.clip <frames_dir> "<command>" <out.mp4>
+       python -m agent.clip --check <clip.mp4>     (exit 1 and list failed rules if invalid)
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -91,29 +93,63 @@ def build_clip(frames_dir, command, out_path):
             writer.write(frame)
     finally:
         writer.release()
-    info = check_clip(out_path)
+    Path(out_path).with_suffix(".json").write_text(json.dumps(
+        {"command": command, "overlay_seconds": OVERLAY_SECONDS, "source_frames": len(frames), "speedup": round(speed, 3)}), encoding="utf-8")
+    info = validate_clip(out_path)
     info.update({"codec": codec, "speedup": round(speed, 3), "source_frames": len(frames),
                  "motion_seconds": round(len(frames) / FPS, 2)})
     return info
 
 
-def check_clip(path):
-    """Read the clip back and enforce the upload rules."""
+def validate_clip(path):
+    """Enforce every clip rule from the brief and say which ones fail.
+
+    Checked: .mp4 file, readable, every frame decodable, 720p or higher, 10-20 s, and the typed
+    command overlay recorded for at least the first 2 s (from the sidecar the builder writes).
+    """
+    path = Path(path)
+    problems = []
+    if path.suffix.lower() != ".mp4":
+        problems.append("file is not .mp4")
+    if not path.exists():
+        return {"path": str(path), "ok": False, "problems": problems + ["file does not exist"]}
     capture = cv2.VideoCapture(str(path))
-    frames = capture.get(cv2.CAP_PROP_FRAME_COUNT)
+    if not capture.isOpened():
+        return {"path": str(path), "ok": False, "problems": problems + ["file cannot be opened as video"]}
+    declared = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = capture.get(cv2.CAP_PROP_FPS) or FPS
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    decoded = 0
+    while capture.grab():
+        decoded += 1
     capture.release()
-    duration = frames / fps
-    problems = []
+    if decoded == 0:
+        problems.append("no readable frames")
+    elif abs(decoded - declared) > 2:
+        problems.append(f"only {decoded} of {declared} frames are readable")
+    duration = decoded / fps
     if not MIN_SECONDS <= duration <= MAX_SECONDS:
         problems.append(f"duration {duration:.1f}s outside 10-20s")
-    if height < 720:
-        problems.append(f"height {height}px below 720p")
+    if height < 720 or width < 1280:
+        problems.append(f"{width}x{height} is below 1280x720")
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        problems.append("overlay record missing (command not shown for the first 2 s)")
+    else:
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not str(meta.get("command", "")).strip() or float(meta.get("overlay_seconds", 0)) < OVERLAY_SECONDS:
+            problems.append("typed command not shown for the first 2 s")
     return {"path": str(path), "seconds": round(duration, 2), "width": width, "height": height, "ok": not problems, "problems": problems}
 
 
+check_clip = validate_clip
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--check":
+        report = validate_clip(sys.argv[2])
+        print(json.dumps(report, indent=2))
+        sys.exit(0 if report["ok"] else 1)
     if len(sys.argv) != 4:
         sys.exit(__doc__)
     print(build_clip(sys.argv[1], sys.argv[2], sys.argv[3]))
