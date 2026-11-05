@@ -254,12 +254,16 @@ class GoToAndReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run("Bring the <b>thing</b>", c, "claude-sonnet-5-5", engine, directory, 5)
             page = next(Path(directory).glob("2*/replay.html")).read_text(encoding="utf-8")
-        self.assertIn("frame-001.png", page)
-        self.assertIn("The target is ahead.", page)
-        self.assertIn("collision", page)
-        self.assertIn("No new image this step", page)
-        self.assertIn("&lt;b&gt;thing&lt;/b&gt;", page)   # command text is escaped
+            index = (Path(directory) / "index.html").read_text(encoding="utf-8")
+        data = json.loads(page.split("id='data'>")[1].split("</script>")[0].replace(r"<\/", "</"))
+        self.assertEqual(data["log"][0]["frame_path"], "frame-001.png")
+        self.assertEqual(data["log"][0]["reasoning"], "The target is ahead.")
+        self.assertTrue(data["log"][0]["result"]["collided"])
+        self.assertIsNone(data["log"][2]["frame_path"])                    # no new image after pickup
+        self.assertEqual((data["outcome"], data["collisions"]), ("pass", 1))
+        self.assertIn("&lt;b&gt;thing&lt;/b&gt;", page)                  # command text is escaped in the page
         self.assertNotIn("<b>thing</b>", page)
+        self.assertIn("RoboHalo replays", index)                          # the index is rebuilt with the run
 
 
 class SearchNoteTests(unittest.TestCase):

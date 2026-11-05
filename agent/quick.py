@@ -131,6 +131,11 @@ def handle(request, client, model, engine, record=False, runs_dir="runs", say=pr
     folder.mkdir(parents=True)
     record_line = {"request": request, "model": model, "steps": steps, "note": note, "results": results}
     (folder / "plan.json").write_text(json.dumps(record_line, indent=2), encoding="utf-8")
+    try:
+        from agent.replay import write_replay
+        write_replay(folder)   # keep the replays site up to date
+    except Exception:
+        pass
     return record_line
 
 

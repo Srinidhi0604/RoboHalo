@@ -37,6 +37,11 @@ def run(command, engine=None, timeout=180, reset=False, record=False, runs_dir="
             result = {"command": command, "outcome": state["outcome"]}
             if record:
                 result["clip"] = finish_clip(engine, run_dir, command)
+                try:
+                    from agent.replay import write_replay
+                    write_replay(run_dir)   # keep the replays site up to date
+                except Exception:
+                    pass
             return result
     return {"command": command, "outcome": "timeout", "state": state["state"]}
 
