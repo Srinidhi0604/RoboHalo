@@ -27,8 +27,8 @@ public sealed class RobotEngine : MonoBehaviour
     [Serializable] private sealed class GoToOutput { public bool ok; public bool collided; public bool reached; public float x; public float y; public float heading; }
     [Serializable] private sealed class SpeedInput { public float scale; }
     [Serializable] private sealed class SpeedOutput { public float scale; }
-    [Serializable] private sealed class ObstacleInput { public bool on; }
-    [Serializable] private sealed class ObstacleOutput { public bool on; }
+    [Serializable] private sealed class ObstacleInput { public bool on; public int walls; }
+    [Serializable] private sealed class ObstacleOutput { public bool on; public int walls; }
     [Serializable] private sealed class ViewOutput { public int index; public string view; }
     [Serializable] private sealed class CommandOutput { public string command; public bool audio; }
     [Serializable] private sealed class StateOutput
@@ -374,7 +374,10 @@ public sealed class RobotEngine : MonoBehaviour
     // Stretch goal: a wall across the straight line from the robot start to the drop zone, so the
     // robot has to find a detour. Operator toggle (panel button or /obstacle); the planner treats it
     // like any other prop, and Claude would see it only as pixels and a depth reading.
-    private Transform obstacle;
+    // Collision practice: three more walls box in the robot's start, one straight ahead in each of the
+    // other directions (headings 0, 180 and 270), with open corners to drive out through.
+    private Transform[] walls;
+    private int wallCount;
 
     // ---- Dark mode (demo only): room lights off, robot sees with an infrared illuminator ----
     // A near-IR camera records brightness, not colour, so frames from /look and the clip become
@@ -484,15 +487,24 @@ public sealed class RobotEngine : MonoBehaviour
         ApplyInfrared(irDisplay);
     }
 
-    private void SetObstacle(bool on)
+    // count: 0 = no walls, 1 = the detour wall only, 4 = all four.
+    private void SetWalls(int count)
     {
-        if (on && obstacle == null)
+        if (walls == null)
         {
-            var wall = Box("Detour wall", new Vector3(layoutCenter.x, floorHeight + 0.4f, layoutCenter.z), new Vector3(2.4f, 0.8f, 0.25f), new Color(0.35f, 0.38f, 0.45f));
-            obstacle = wall.transform;
+            Color grey = new Color(0.35f, 0.38f, 0.45f);
+            float y = floorHeight + 0.4f, startZ = layoutCenter.z + layoutEndZ; // the robot starts at (layoutCenter.x, startZ)
+            walls = new[]
+            {
+                Box("Detour wall", new Vector3(layoutCenter.x, y, layoutCenter.z), new Vector3(2.4f, 0.8f, 0.25f), grey).transform,          // heading 90
+                Box("Start wall heading 0", new Vector3(layoutCenter.x + 2f, y, startZ), new Vector3(0.25f, 0.8f, 1.2f), grey).transform,
+                Box("Start wall heading 180", new Vector3(layoutCenter.x - 2f, y, startZ), new Vector3(0.25f, 0.8f, 1.2f), grey).transform,
+                Box("Start wall heading 270", new Vector3(layoutCenter.x, y, startZ + 1.4f), new Vector3(2f, 0.8f, 0.25f), grey).transform,
+            };
         }
-        if (obstacle != null) obstacle.gameObject.SetActive(on);
-        guiStatus = on ? "Detour wall placed between the robot and the drop zone." : "Detour wall removed.";
+        wallCount = Mathf.Clamp(count, 0, walls.Length);
+        for (int i = 0; i < walls.Length; i++) walls[i].gameObject.SetActive(i < wallCount);
+        guiStatus = wallCount == 0 ? "Walls removed." : wallCount == 1 ? "Detour wall placed between the robot and the drop zone." : wallCount + " walls placed around the robot's start.";
     }
 
     // Scales all motion and animation. 1x = the documented 1 m/s and 90 deg/s; use 1x for judged clips.
@@ -876,13 +888,14 @@ public sealed class RobotEngine : MonoBehaviour
         GUILayout.Label("MODES", TextStyle(11, new Color(0.55f, 0.60f, 0.68f), FontStyle.Bold));
         GUILayout.BeginHorizontal();
         if (GUILayout.Button(darkMode ? "Dark mode: ON" : "Dark mode: OFF", ButtonStyle(darkMode ? new Color(0.42f, 0.26f, 0.66f) : CardColor, Color.white, 12), GUILayout.Height(28))) SetDarkMode(!darkMode);
-        bool wallOn = obstacle != null && obstacle.gameObject.activeSelf;
-        if (GUILayout.Button(wallOn ? "Detour wall: ON" : "Detour wall: OFF", ButtonStyle(wallOn ? new Color(0.72f, 0.46f, 0.10f) : CardColor, Color.white, 12), GUILayout.Height(28))) SetObstacle(!wallOn);
+        // One button cycles the walls: off -> detour wall -> all four -> off.
+        if (GUILayout.Button(wallCount == 0 ? "Walls: OFF" : "Walls: " + wallCount, ButtonStyle(wallCount > 0 ? new Color(0.72f, 0.46f, 0.10f) : CardColor, Color.white, 12), GUILayout.Height(28)))
+            SetWalls(wallCount == 0 ? 1 : wallCount == 1 ? 4 : 0);
         GUILayout.EndHorizontal();
         GUILayout.Space(8);
 
         // Prewritten commands
-        GUILayout.Label("DEBUG PRESETS (SCRIPTED)", TextStyle(11, new Color(0.55f, 0.60f, 0.68f), FontStyle.Bold));
+        GUILayout.Label("TEST RUNS", TextStyle(11, new Color(0.55f, 0.60f, 0.68f), FontStyle.Bold));
         GUI.enabled = !running;
         for (int i = 0; i < shapeCommands.Length; i += 2)
         {
@@ -1073,12 +1086,13 @@ public sealed class RobotEngine : MonoBehaviour
                 SetDarkMode(input != null && input.on);
                 Reply(context, new ObstacleOutput { on = darkMode });
             }
-            else if (method == "GET" && path == "/obstacle") Reply(context, new ObstacleOutput { on = obstacle != null && obstacle.gameObject.activeSelf });
+            else if (method == "GET" && path == "/obstacle") Reply(context, new ObstacleOutput { on = wallCount > 0, walls = wallCount });
             else if (method == "POST" && path == "/obstacle")
             {
+                // {"on": true} is the single detour wall, as before; {"on": true, "walls": 4} is all four.
                 var input = JsonUtility.FromJson<ObstacleInput>(requestBody);
-                SetObstacle(input != null && input.on);
-                Reply(context, new ObstacleOutput { on = obstacle != null && obstacle.gameObject.activeSelf });
+                SetWalls(input == null || !input.on ? 0 : Mathf.Max(1, input.walls));
+                Reply(context, new ObstacleOutput { on = wallCount > 0, walls = wallCount });
             }
             else if (method == "POST" && path == "/go_to")
             {
@@ -1322,6 +1336,7 @@ public sealed class RobotEngine : MonoBehaviour
 
     private void InternalReset()
     {
+        gripLift = GripRest; gripWidth = GripOpen; // gripper back to rest at once, not animating into the camera view
         if (held != null)
         {
             held.SetParent(null, true);

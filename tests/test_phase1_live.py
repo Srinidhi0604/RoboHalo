@@ -483,7 +483,7 @@ def test_each_wall_shows_in_depth_and_stops_the_robot():
         set_walls(0)
 
 
-def test_scripted_fetch_and_go_to_get_past_four_walls():
+def test_test_run_fetch_and_go_to_get_past_four_walls():
     reset()
     set_walls(4)
     try:
