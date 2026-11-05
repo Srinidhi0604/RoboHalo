@@ -339,6 +339,7 @@ Phase 1 decides **65%** of your score, Phase 2 adds **20%**, and stretch goals a
 | Agent loop, one image and one tool per step, 60-step stop, JSONL and PNG log | `agent/run_agent.py` |
 | Budget rules: caching, latest frame only, no look after pickup or drop, run counter, cost per step | `agent/run_agent.py` |
 | Phase 2 POV clip (1280×720 mp4, 10–20 s, 2 s command overlay) | Engine recorder (`record_dir` on `/start`) and `agent/clip.py` |
+| Dark mode (lights off, infrared camera), demo only, not for judged runs | Engine `SetDarkMode`, panel button, `/dark`; tested in `tests/test_phase1_live.py` |
 | Built-in non-Claude runner for demos and tests | `agent/builtin.py`, engine `/run_builtin` |
 | Live acceptance tests | `tests/test_phase1_live.py` |
 | Offline tests | `tests/test_agent.py`, `tests/test_clip.py` |

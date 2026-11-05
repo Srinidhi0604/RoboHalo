@@ -158,3 +158,121 @@ class AgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FORBIDDEN = ("red", "blue", "yellow", "green", "cube", "sphere", "cylinder", "cone", "sphere", "pallet", "warehouse",
+             "object_id", "object_pos", "zone_x", "zone_y")
+
+
+class BoundaryAuditTests(unittest.TestCase):
+    """A3: nothing privileged reaches Claude, and every image Claude saw is on disk and in the log."""
+
+    def run_session(self, directory):
+        engine = FakeEngine(collide_first_move=True)
+        c, messages = client([("turn", {"degrees": 45}), ("move", {"distance": 1}), ("pickup", {}), ("drop", {})])
+        run("Fetch the thing I asked for", c, "claude-sonnet-5-5", engine, directory, 6)
+        return engine, messages.requests
+
+    def test_payloads_contain_no_scene_facts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, requests = self.run_session(directory)
+            for request in requests:
+                text = json.dumps({k: v for k, v in request.items() if k != "messages"}).lower()  # system + tools
+                for message in request["messages"]:
+                    blocks = message["content"] if isinstance(message["content"], list) else [{"type": "text", "text": message["content"]}]
+                    for block in blocks:
+                        if block["type"] == "text":
+                            text += " " + block["text"].lower()
+                        elif block["type"] == "tool_result":
+                            text += " " + json.dumps([b for b in block["content"] if b.get("type") == "text"]).lower()
+                        elif block["type"] == "tool_use":
+                            text += " " + json.dumps(block["input"]).lower()
+                import re
+                for word in FORBIDDEN:
+                    self.assertIsNone(re.search(rf"{word}", text), word)
+
+    def test_every_image_sent_has_a_saved_frame_and_a_log_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, requests = self.run_session(directory)
+            sent = sum(json.dumps(r["messages"]).count('"type": "image"') for r in requests)
+            run_dir = next(Path(directory).glob("2*"))
+            entries = [json.loads(line) for line in (run_dir / "run.jsonl").read_text().splitlines()]
+            logged = [e["frame_path"] for e in entries if "step" in e and e["frame_path"]]
+            self.assertEqual(sent, len(logged))
+            for name in logged:
+                self.assertTrue((run_dir / name).exists(), name)
+
+    def test_engine_error_strings_do_not_describe_the_scene(self):
+        source = Path(r"E:\turtlebot3-unity-rossharp-main\turtlebot3-unity-rossharp-main\Assets\Scripts\RobotEngine.cs")
+        if not source.exists():
+            self.skipTest("Unity project not on this machine")
+        import re
+        for message in re.findall(r'Error\(context, \d+, "([^"]+)"\)', source.read_text(encoding="utf-8")):
+            for word in ("red", "blue", "yellow", "cube", "sphere", "cylinder", "cone", "position", "zone"):
+                self.assertNotRegex(message.lower(), rf"\b{word}\b", message)
+
+    def test_camera_contract_in_engine_source(self):
+        source = Path(r"E:\turtlebot3-unity-rossharp-main\turtlebot3-unity-rossharp-main\Assets\Scripts\RobotEngine.cs")
+        if not source.exists():
+            self.skipTest("Unity project not on this machine")
+        text = source.read_text(encoding="utf-8")
+        self.assertIn("new Vector3(0, 0.5f, 0.28f)", text)      # 0.5 m above the floor, at the front
+        self.assertIn("Quaternion.Euler(10, 0, 0)", text)       # 10 degrees down
+        self.assertIn("fieldOfView = 73.74f", text)             # 90 degrees horizontal at 4:3
+        self.assertIn("new RenderTexture(640, 480", text)       # 640x480
+
+
+class GoToAndReplayTests(unittest.TestCase):
+    def test_go_to_is_sent_to_the_engine_and_followed_by_a_new_image(self):
+        engine = FakeEngine()
+        c, messages = client([("go_to", {"x": 1.5, "y": 2.0, "stop_short": 0.7}), ("drop", {})])
+        with tempfile.TemporaryDirectory() as directory:
+            run("Fetch it", c, "claude-sonnet-5-5", engine, directory, 5)
+        self.assertIn(("/go_to", {"x": 1.5, "y": 2.0, "stop_short": 0.7}), engine.calls)
+        self.assertEqual(sum(path == "/look" for path, _ in engine.calls), 2)
+        self.assertIn("go_to", [t["name"] for t in messages.requests[0]["tools"]])
+
+    def test_go_to_without_numbers_is_rejected_before_the_engine(self):
+        engine = FakeEngine()
+        c, _ = client([("go_to", {"x": "left"}), ("drop", {})])
+        with tempfile.TemporaryDirectory() as directory:
+            run("Fetch it", c, "claude-sonnet-5-5", engine, directory, 5)
+        self.assertFalse(any(path == "/go_to" for path, _ in engine.calls))
+
+    def test_move_and_turn_only_mode_hides_go_to(self):
+        engine = FakeEngine()
+        c, messages = client([("drop", {})])
+        with tempfile.TemporaryDirectory() as directory:
+            run("Fetch it", c, "claude-sonnet-5-5", engine, directory, 3, allow_go_to=False)
+        request = messages.requests[0]
+        self.assertNotIn("go_to", [t["name"] for t in request["tools"]])
+        self.assertNotIn("go_to", request["system"][0]["text"])
+
+    def test_replay_page_shows_frames_reasoning_and_tool_calls(self):
+        engine = FakeEngine(collide_first_move=True)
+        c, _ = client([("move", {"distance": 1}), ("pickup", {}), ("drop", {})])
+        with tempfile.TemporaryDirectory() as directory:
+            run("Bring the <b>thing</b>", c, "claude-sonnet-5-5", engine, directory, 5)
+            page = next(Path(directory).glob("2*/replay.html")).read_text(encoding="utf-8")
+            index = (Path(directory) / "index.html").read_text(encoding="utf-8")
+        data = json.loads(page.split("id='data'>")[1].split("</script>")[0].replace(r"<\/", "</"))
+        self.assertEqual(data["log"][0]["frame_path"], "frame-001.png")
+        self.assertEqual(data["log"][0]["reasoning"], "The target is ahead.")
+        self.assertTrue(data["log"][0]["result"]["collided"])
+        self.assertIsNone(data["log"][2]["frame_path"])                    # no new image after pickup
+        self.assertEqual((data["outcome"], data["collisions"]), ("pass", 1))
+        self.assertIn("&lt;b&gt;thing&lt;/b&gt;", page)                  # command text is escaped in the page
+        self.assertNotIn("<b>thing</b>", page)
+        self.assertIn("RoboHalo replays", index)                          # the index is rebuilt with the run
+
+
+class SearchNoteTests(unittest.TestCase):
+    def test_status_lists_viewed_headings_and_stops_repeat_sweeps(self):
+        from agent.run_agent import search_note, status_text
+        self.assertIsNone(search_note([0], 1))
+        self.assertNotIn("full circle", search_note([0, 90, 180], 1))        # 180-360 still unseen
+        full = search_note([0, 45, 90, 135, 180, 225, 270, 315], 1)
+        self.assertIn("full circle", full)
+        self.assertNotIn("fail", full)
+        self.assertIn("call fail", search_note([0, 90, 180, 270.2], 3))      # third spot: allowed to give up
+        self.assertIn("Headings already viewed", status_text(3, 2.0, {"viewed": [0, 45], "spots": 1}, True))

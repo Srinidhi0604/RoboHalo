@@ -1,1 +1,2 @@
 anthropic>=0.74,<1
+Pillow>=10,<13

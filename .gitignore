@@ -17,3 +17,12 @@ runs/
 
 __pycache__/
 *.pyc
+
+
+# Membrane credentials (never commit)
+.membrane.env
+*.membrane.json
+
+# Unity scene auto-recovery backups
+engine/Assets/_Recovery/
+engine/Assets/_Recovery.meta
